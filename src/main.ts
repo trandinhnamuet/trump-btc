@@ -1,11 +1,15 @@
-import crypto from 'crypto';
+import { randomUUID } from 'crypto';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 
-// Polyfill globalThis.crypto for @nestjs/schedule
-if (!globalThis.crypto) {
-  globalThis.crypto = crypto as any;
+// Polyfill crypto.randomUUID for @nestjs/schedule
+if (!globalThis.crypto?.randomUUID) {
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { randomUUID },
+    writable: true,
+    configurable: true,
+  });
 }
 
 const logger = new Logger('Bootstrap');
