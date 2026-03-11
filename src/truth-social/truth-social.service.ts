@@ -1,206 +1,94 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
+import { spawn } from 'child_process';
+import * as path from 'path';
 import { TruthSocialPost } from '../common/interfaces';
-import { TruthSocialAuthService } from './truth-social-auth.service';
 
 /**
- * TruthSocialService: Lấy bài viết của Trump từ Truth Social.
+ * TruthSocialService: L?y b�i vi?t c?a Trump t? Truth Social.
  *
- * Truth Social dùng Mastodon-compatible API, nên ta có thể dùng endpoint:
- * GET https://truthsocial.com/api/v1/accounts/{id}/statuses
- *
- * Trump's account ID: 107780257626128497
+ * S? d?ng Python + curl_cffi d? bypass Cloudflare (impersonate Chrome).
+ * Script fetch-posts.py n?m c�ng thu m?c g?c project.
  */
 @Injectable()
 export class TruthSocialService {
   private readonly logger = new Logger(TruthSocialService.name);
 
-  private readonly TRUMP_ACCOUNT_ID = '107780257626128497';
-  private readonly BASE_URL = 'https://truthsocial.com/api/v1';
+  // �u?ng d?n tuy?t d?i d?n Python script
+  private readonly FETCH_SCRIPT = path.join(process.cwd(), 'fetch-posts.py');
 
-  // Cache access token để không phải login mỗi lần
-  private accessToken: string | null = null;
-
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly authService: TruthSocialAuthService,
-  ) {
-    this.initializeToken();
+  constructor() {
+    this.logger.log('? TruthSocialService kh?i d?ng (curl_cffi mode)');
   }
 
   /**
-   * Khởi tạo token khi module load.
-   * Ưu tiên: TRUTH_SOCIAL_ACCESS_TOKEN từ .env > Puppeteer auto-login
-   */
-  private initializeToken() {
-    const envToken = this.configService.get<string>('TRUTH_SOCIAL_ACCESS_TOKEN');
-    if (envToken) {
-      this.accessToken = envToken;
-      this.logger.log('✓ Sử dụng TRUTH_SOCIAL_ACCESS_TOKEN từ .env');
-      return;
-    }
-
-    const username = this.configService.get<string>('TRUTHSOCIAL_USERNAME');
-    const password = this.configService.get<string>('TRUTHSOCIAL_PASSWORD');
-    if (username && password) {
-      this.logger.log('ℹ️  TRUTH_SOCIAL_ACCESS_TOKEN không tìm thấy. Sẽ dùng Puppeteer để auto-login khi cần.');
-      return;
-    }
-
-    this.logger.error(
-      '❌ Không có token và credentials. Cấu hình một trong hai:\n' +
-      '   1. TRUTH_SOCIAL_ACCESS_TOKEN (token hợp lệ từ DevTools)\n' +
-      '   2. TRUTHSOCIAL_USERNAME + TRUTHSOCIAL_PASSWORD (sẽ auto-login bằng Puppeteer)'
-    );
-  }
-
-  /**
-   * Lấy các bài viết mới nhất của Trump.
-   *
-   * @param sinceId - Nếu có, chỉ lấy bài viết có ID lớn hơn (mới hơn) sinceId.
-   *                  Điều này giúp lấy TẤT CẢ bài mới từ lần check cuối.
-   * @returns Mảng bài viết, sắp xếp từ CŨ đến MỚI (để xử lý tuần tự đúng thứ tự)
+   * L?y c�c b�i vi?t m?i nh?t c?a Trump.
+   * @param sinceId - N?u c�, ch? l?y b�i vi?t m?i hon sinceId.
+   * @returns M?ng b�i vi?t t? CU d?n M?I
    */
   async getLatestPosts(sinceId?: string | null): Promise<TruthSocialPost[]> {
-    try {
-      const params: Record<string, string | number> = { limit: 40 };
+    this.logger.debug(
+      `�ang l?y b�i vi?t t? Truth Social${sinceId ? ` (since_id: ${sinceId})` : ' (l?n d?u)'}`,
+    );
 
-      // since_id: Chỉ lấy bài có ID lớn hơn giá trị này (bài mới hơn)
-      if (sinceId) {
-        params.since_id = sinceId;
+    try {
+      const args = sinceId ? [this.FETCH_SCRIPT, sinceId] : [this.FETCH_SCRIPT];
+      const output = await this.runPython(args);
+
+      const data = JSON.parse(output);
+
+      // N?u Python tr? v? l?i
+      if (data?.error) {
+        this.logger.error(`? fetch-posts.py l?i: ${data.error}`);
+        return [];
       }
 
-      this.logger.debug(
-        `Đang lấy bài viết từ Truth Social${sinceId ? ` (since_id: ${sinceId})` : ' (lần đầu)'}`,
-      );
+      const posts = (data as any[]).map((post) => ({
+        id: post.id as string,
+        content: post.content as string,
+        createdAt: post.createdAt as string,
+        url: post.url as string,
+      })).reverse(); // CU ? M?I
 
-      const posts = await this.fetchPosts(params);
       if (posts.length > 0) {
-        this.logger.log(`Tìm thấy ${posts.length} bài viết mới từ Truth Social`);
-      } else {
-        this.logger.log('Không có bài viết mới');
+        this.logger.log(`? T�m th?y ${posts.length} b�i vi?t m?i`);
       }
       return posts;
     } catch (error) {
-      this.logger.error(`❌ Lỗi getLatestPosts: ${error.message}`);
+      this.logger.error(`? L?i khi ch?y fetch-posts.py: ${error.message}`);
       return [];
     }
   }
 
   /**
-   * Fetch posts từ API. Nếu token 403, thử refresh token.
+   * Ch?y Python script v� tr? v? stdout.
    */
-  private async fetchPosts(params: Record<string, string | number>): Promise<TruthSocialPost[]> {
-    try {
-      const headers = this.buildHeaders();
+  private runPython(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const python = spawn('python3', args, {
+        timeout: 30000,
+        env: process.env,
+      });
 
-      const response = await axios.get(
-        `${this.BASE_URL}/accounts/${this.TRUMP_ACCOUNT_ID}/statuses`,
-        {
-          params,
-          headers,
-          timeout: 15000,
-        },
-      );
+      let stdout = '';
+      let stderr = '';
 
-      // Parse response
-      return (response.data as any[])
-        .map((post) => ({
-          id: post.id as string,
-          content: this.stripHtml(post.content as string),
-          createdAt: post.created_at as string,
-          url: (post.url as string) || `https://truthsocial.com/@realDonaldTrump/${post.id}`,
-        }))
-        .reverse();
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
+      python.stdout.on('data', (data) => { stdout += data.toString(); });
+      python.stderr.on('data', (data) => {
+        stderr += data.toString();
+        this.logger.debug(data.toString().trim());
+      });
 
-        // Token hết hạn - thử refresh
-        if (status === 401 || status === 403) {
-          this.logger.warn(`⚠️  API trả về ${status}. Token hết hạn. Thử refresh...`);
-          const newToken = await this.authService.getAccessToken();
-
-          if (newToken) {
-            this.accessToken = newToken;
-            this.logger.log('✓ Lấy token mới thành công. Thử lại...');
-            
-            // Retry request sau khi refresh token
-            const retryHeaders = this.buildHeaders();
-            const response = await axios.get(
-              `${this.BASE_URL}/accounts/${this.TRUMP_ACCOUNT_ID}/statuses`,
-              {
-                params,
-                headers: retryHeaders,
-                timeout: 15000,
-              },
-            );
-
-            return (response.data as any[])
-              .map((post) => ({
-                id: post.id as string,
-                content: this.stripHtml(post.content as string),
-                createdAt: post.created_at as string,
-                url: (post.url as string) || `https://truthsocial.com/@realDonaldTrump/${post.id}`,
-              }))
-              .reverse();
-          } else {
-            this.logger.error(
-              '❌ Không thể lấy token mới. Kiểm tra TRUTHSOCIAL_USERNAME/PASSWORD hoặc TRUTH_SOCIAL_ACCESS_TOKEN trong .env'
-            );
-          }
-        } else if (status === 400) {
-          this.logger.error(`❌ Lỗi request (400): ${error.response?.data?.error || error.message}`);
-        } else if (status === 429) {
-          this.logger.warn('⏳ Truth Social rate limit. Sẽ thử lại sau...');
+      python.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout.trim());
         } else {
-          this.logger.error(`❌ Lỗi API Truth Social (${status}): ${error.message}`);
+          reject(new Error(stderr.trim() || `Python exit code ${code}`));
         }
-      } else {
-        this.logger.error('❌ Lỗi kết nối Truth Social:', error.message);
-      }
+      });
 
-      return [];
-    }
-  }
-
-  /**
-   * Xây dựng headers cho request.
-   * Sử dụng cached access token hoặc token từ .env.
-   */
-  private buildHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      // Giả lập browser để tránh bị block
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    };
-
-    const token = this.accessToken;
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    return headers;
-  }
-
-  /**
-   * Xóa HTML tags và decode HTML entities.
-   * Truth Social trả về nội dung dạng HTML.
-   */
-  private stripHtml(html: string): string {
-    return html
-      .replace(/<br\s*\/?>/gi, '\n') // Chuyển <br> thành xuống dòng
-      .replace(/<[^>]+>/g, '') // Xóa tất cả HTML tags
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\n{3,}/g, '\n\n') // Gộp nhiều dòng trống thành 2
-      .trim();
+      python.on('error', (err) => {
+        reject(new Error(`Kh�ng t�m du?c python3: ${err.message}`));
+      });
+    });
   }
 }
