@@ -58,5 +58,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Environment variables (ch?a API keys nh?y c?m)
 .env
 
-# D? li?u bài vi?t (có th? l?n, không c?n commit)
+# D? li?u bï¿½i vi?t (cï¿½ th? l?n, khï¿½ng c?n commit)
 data/posts.json
+
+# Legacy main folder (contains secrets)
+main/
