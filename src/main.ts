@@ -1,7 +1,12 @@
-import 'crypto';
+import crypto from 'crypto';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
+
+// Polyfill globalThis.crypto for @nestjs/schedule
+if (!globalThis.crypto) {
+  globalThis.crypto = crypto as any;
+}
 
 const logger = new Logger('Bootstrap');
 
