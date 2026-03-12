@@ -212,12 +212,16 @@ export class PollingService {
       const analysis = await this.analysisService.analyzePost(post.content);
 
       // Cập nhật record với kết quả phân tích
+      // ⭐ LƯU Ý: Phân tích được LƯU VÀO STORAGE cho TẤT CẢ BÀI, không chỉ những bài > ngưỡng
       this.storageService.updatePost(post.id, {
         summary: analysis.summary,
         btcInfluenceProbability: analysis.btcInfluenceProbability,
         btcDirection: analysis.btcDirection,
         reasoning: analysis.reasoning,
       });
+      this.logger.log(
+        `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}) -> "${analysis.summary}"`,
+      );
 
       // Bước 4: Gửi alert nếu xác suất ảnh hưởng vượt ngưỡng
       if (analysis.btcInfluenceProbability >= this.threshold) {
@@ -228,7 +232,7 @@ export class PollingService {
         this.storageService.updatePost(post.id, { alerted: true });
       } else {
         this.logger.log(
-          `Xác suất ${analysis.btcInfluenceProbability}% < ${this.threshold}%, không gửi alert`,
+          `➡️  Xác suất ${analysis.btcInfluenceProbability}% < ${this.threshold}%, không gửi alert (nhưng phân tích đã được lưu)`,
         );
       }
     } catch (error) {
