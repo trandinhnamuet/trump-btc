@@ -159,12 +159,12 @@ export class TelegramService implements OnModuleInit {
       try {
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 80)
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 50)
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
           .slice(0, 15);
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;80%.');
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=50%.');
           return;
         }
 
@@ -374,7 +374,7 @@ ${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b
 
   /**
    * Xây dựng tin nhắn bảng tổng hợp cho /check command.
-   * Hiển thị các bài >80% kèm 4 cột giá BTC.
+   * Hiển thị các bài >=50% kèm 4 cột giá BTC.
    */
   private buildCheckMessage(posts: PostRecord[]): string {
     const fmtPrice = (p: number | null | undefined): string => {
@@ -389,7 +389,7 @@ ${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b
       return ` (${sign}${pct.toFixed(1)}%)`;
     };
 
-    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;80% (${posts.length} bài gần nhất)</b>
+    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;=50% (${posts.length} bài gần nhất)</b>
 `];
 
     posts.forEach((p, i) => {
