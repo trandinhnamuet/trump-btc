@@ -3,9 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import TelegramBot = require('node-telegram-bot-api');
-import { AnalysisResult, TruthSocialPost, UserConfig } from '../common/interfaces';
+import { AnalysisResult, PostRecord, TruthSocialPost, UserConfig } from '../common/interfaces';
 import { AnalysisService } from '../analysis/analysis.service';
 import { BtcPriceService } from '../btc-price/btc-price.service';
+import { StorageService } from '../storage/storage.service';
 
 /**
  * TelegramService: Gửi thông báo alert đến danh sách users khi Trump đăng bài
@@ -30,6 +31,7 @@ export class TelegramService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
+    private readonly storageService: StorageService,
   ) {}
 
   /** Khởi tạo bot và load danh sách users khi app start */
@@ -113,6 +115,67 @@ export class TelegramService implements OnModuleInit {
           chatId,
           `❌ Lỗi phân tích: ${error.message}`,
         );
+      }
+    });
+
+    // Handle /menu command
+    this.bot.onText(/^\/menu$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      const message = `📋 <b>DANH SÁCH LỆNH</b>
+
+` +
+        `🟢 /start — Đăng ký nhận alert tự động từ Trump
+` +
+        `💰 /btc — Xem giá BTC hiện tại
+` +
+        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;80%
+` +
+        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản
+` +
+        `📋 /menu — Hiển thị danh sách lệnh này`;
+      await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
+    });
+
+    // Handle /btc command
+    this.bot.onText(/^\/btc$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang lấy giá BTC...');
+        const price = await this.btcPriceService.getCurrentPrice();
+        const text = price !== null
+          ? `💰 <b>Giá BTC hiện tại:</b> <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</b>
+🕐 ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`
+          : '❌ Không lấy được giá BTC lúc này, vui lòng thử lại sau.';
+        await this.bot?.sendMessage(chatId, text, { parse_mode: 'HTML' });
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /btc: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
+    // Handle /check command
+    this.bot.onText(/^\/check$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const posts = this.storageService.getAllPosts();
+        const filtered = posts
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 80)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .slice(0, 15);
+
+        if (filtered.length === 0) {
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;80%.');
+          return;
+        }
+
+        const message = this.buildCheckMessage(filtered);
+        await this.bot?.sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        });
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /check: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
       }
     });
 
@@ -307,6 +370,47 @@ ${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b
 
 🕐 <b>Đăng lúc:</b> ${postedAt}
 🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
+  }
+
+  /**
+   * Xây dựng tin nhắn bảng tổng hợp cho /check command.
+   * Hiển thị các bài >80% kèm 4 cột giá BTC.
+   */
+  private buildCheckMessage(posts: PostRecord[]): string {
+    const fmtPrice = (p: number | null | undefined): string => {
+      if (p == null) return '⏳';
+      return `$${p.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+    };
+
+    const fmtChange = (base: number | undefined, later: number | null | undefined): string => {
+      if (base == null || later == null) return '';
+      const pct = ((later - base) / base) * 100;
+      const sign = pct >= 0 ? '+' : '';
+      return ` (${sign}${pct.toFixed(1)}%)`;
+    };
+
+    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;80% (${posts.length} bài gần nhất)</b>
+`];
+
+    posts.forEach((p, i) => {
+      const dir = p.btcDirection === 'increase' ? '↑' : p.btcDirection === 'decrease' ? '↓' : '─';
+      const date = new Date(p.createdAt).toLocaleString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        day: '2-digit', month: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+      });
+      const base = p.btcPriceAtPost;
+      lines.push(
+        `<b>${i + 1}. [${date}]</b> <b>${p.btcInfluenceProbability}% ${dir}</b>\n` +
+        `   📌 ${(p.summary ?? p.content).substring(0, 80)}...\n` +
+        `   💰 Lúc đăng: <code>${fmtPrice(base)}</code>\n` +
+        `   ⏱ +1h:  <code>${fmtPrice(p.btcPriceAt1h)}${fmtChange(base, p.btcPriceAt1h)}</code>\n` +
+        `   📅 +1d:  <code>${fmtPrice(p.btcPriceAt1d)}${fmtChange(base, p.btcPriceAt1d)}</code>\n` +
+        `   📆 +7d:  <code>${fmtPrice(p.btcPriceAt7d)}${fmtChange(base, p.btcPriceAt7d)}</code>`
+      );
+    });
+
+    return lines.join('\n\n');
   }
 
   /** Tạo thanh tiến độ dạng text để hiển thị %, với màu sắc dựa vào hướng ảnh hưởng */
