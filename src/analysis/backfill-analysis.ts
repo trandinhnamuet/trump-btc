@@ -139,9 +139,23 @@ async function backfillAnalysis() {
         post.btcDirection = analysis.btcDirection;
         post.reasoning = analysis.reasoning;
 
-        console.log(
-          `✅ Xác suất: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})\n`
-        );
+        // Format direction with arrow and color
+        let directionIndicator = '';
+        let colorCode = '\x1b[0m'; // Reset color
+
+        if (analysis.btcDirection === 'increase') {
+          directionIndicator = '↑';
+          colorCode = '\x1b[32m'; // Green for increase
+        } else if (analysis.btcDirection === 'decrease') {
+          directionIndicator = '↓';
+          colorCode = '\x1b[31m'; // Red for decrease
+        } else {
+          directionIndicator = '─';
+          colorCode = '\x1b[90m'; // Gray for neutral
+        }
+
+        const percentageDisplay = `${colorCode}${analysis.btcInfluenceProbability}%${directionIndicator}\x1b[0m`;
+        console.log(`✅ Xác suất: ${percentageDisplay}\n`);
         successCount++;
       } catch (error) {
         console.error(
