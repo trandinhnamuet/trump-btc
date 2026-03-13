@@ -42,9 +42,18 @@ export class TelegramService implements OnModuleInit {
       return;
     }
 
-    // polling: false = chỉ gửi tin nhắn, không cần nhận
-    this.bot = new TelegramBot(token, { polling: false });
-    this.logger.log('Telegram Bot đã khởi tạo thành công (send-only mode)');
+    // polling: true = nhận lệnh từ users, có thể handle /start để lấy Chat ID
+    this.bot = new TelegramBot(token, { polling: true });
+    
+    // Handle /start command để user lấy Chat ID của mình
+    this.bot.onText(/\/start/, (msg: any) => {
+      const chatId = msg.chat.id;
+      const message = `✅ Xin chào!\n\n👤 <b>Chat ID của bạn:</b> <code>${chatId}</code>\n\n💡 Thêm ID này vào <code>data/users.json</code> để nhận alerts từ Trump.\n\n📝 Format:\n<code>{"chatId": "${chatId}", "name": "Tên của bạn"}</code>`;
+      this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
+      this.logger.log(`📱 User /start: Chat ID = ${chatId}, Name = ${msg.chat.first_name}`);
+    });
+
+    this.logger.log('Telegram Bot đã khởi tạo thành công (polling mode enabled)');
   }
 
   /** Load danh sách users từ data/users.json */
