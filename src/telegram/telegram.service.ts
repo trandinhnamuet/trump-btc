@@ -160,8 +160,7 @@ export class TelegramService implements OnModuleInit {
         const posts = this.storageService.getAllPosts();
         const filtered = posts
           .filter(p => (p.btcInfluenceProbability ?? 0) >= 50)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-          .slice(0, 15);
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         if (filtered.length === 0) {
           await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=50%.');
