@@ -75,7 +75,7 @@ export class TelegramService implements OnModuleInit {
 
     // Handle /test command để phân tích nội dung do user cung cấp
     this.bot.onText(/\/test (.+)/s, async (msg: any, match: any) => {
-      const chatId = msg.chat.id;
+      const chatId = String(msg.chat.id);
       const content = match[1].trim();
 
       try {
