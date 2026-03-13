@@ -5,13 +5,13 @@
  * This script:
  * 1. Reads data/posts.json
  * 2. Finds posts without analysis data
- * 3. Calls OpenAI to analyze each one
+ * 3. Calls Grok API to analyze each one
  * 4. Saves the analysis results back
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import OpenAI from 'openai';
+import axios from 'axios';
 import { PostRecord, StorageData, AnalysisResult } from '../common/interfaces';
 
 // Simple function to analyze post (copy of AnalysisService.analyzePost logic)
@@ -60,28 +60,36 @@ function loadEnv(): Record<string, string> {
   return env;
 }
 
-async function analyzePost(openai: OpenAI, content: string): Promise<AnalysisResult> {
+async function analyzePost(grokApiKey: string, content: string): Promise<AnalysisResult> {
   const prompt = buildAnalysisPrompt(content);
-  const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      {
-        role: 'system',
-        content: `Bạn là chuyên gia phân tích tài chính cryptocurrency, chuyên đánh giá tác động của các sự kiện chính trị/kinh tế đến giá Bitcoin. 
+  const response = await axios.post(
+    'https://api.x.ai/v1/chat/completions',
+    {
+      messages: [
+        {
+          role: 'system',
+          content: `Bạn là chuyên gia phân tích tài chính cryptocurrency, chuyên đánh giá tác động của các sự kiện chính trị/kinh tế đến giá Bitcoin. 
 Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu cầu.`,
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      model: 'grok-4-latest',
+      temperature: 0.3,
+      max_tokens: 500,
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${grokApiKey}`,
       },
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.3,
-    max_tokens: 500,
-  });
+    },
+  );
 
-  const messageContent = response.choices[0]?.message?.content ?? '';
-  if (!messageContent) throw new Error('OpenAI trả về response rỗng');
+  const messageContent = response.data?.choices?.[0]?.message?.content ?? '';
+  if (!messageContent) throw new Error('Grok trả về response rỗng');
 
   const parsed = JSON.parse(messageContent) as any;
   return {
@@ -96,9 +104,9 @@ async function backfillAnalysis() {
   try {
     // Load .env
     const env = loadEnv();
-    const apiKey = env.OPENAI_API_KEY;
+    const apiKey = env.GROK_API_KEY;
     if (!apiKey) {
-      console.log('❌ OPENAI_API_KEY chưa được cấu hình trong .env');
+      console.log('❌ GROK_API_KEY chưa được cấu hình trong .env');
       process.exit(1);
     }
 
@@ -121,9 +129,6 @@ async function backfillAnalysis() {
 
     console.log(`\n📊 Tìm thấy ${postsNeedingAnalysis.length} bài viết chưa được phân tích.\n`);
 
-    // Initialize OpenAI
-    const openai = new OpenAI({ apiKey });
-
     let successCount = 0;
     let errorCount = 0;
 
@@ -131,7 +136,7 @@ async function backfillAnalysis() {
       try {
         console.log(`⏳ Phân tích bài ${post.id}: "${post.content.substring(0, 60)}..."`);
         
-        const analysis = await analyzePost(openai, post.content);
+        const analysis = await analyzePost(apiKey, post.content);
         
         // Update the post with analysis
         post.summary = analysis.summary;
