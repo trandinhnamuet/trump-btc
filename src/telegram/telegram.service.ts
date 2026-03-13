@@ -74,9 +74,19 @@ export class TelegramService implements OnModuleInit {
     });
 
     // Handle /test command để phân tích nội dung do user cung cấp
-    this.bot.onText(/\/test (.+)/s, async (msg: any, match: any) => {
+    // Accept both space and newline after /test and capture all following text
+    this.bot.onText(/^\/test(?:\s+)([\s\S]+)/i, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
-      const content = match[1].trim();
+      const content = (match && match[1]) ? match[1].trim() : '';
+
+      // If user sent only '/test' without content, reply with usage help
+      if (!content) {
+        await this.bot?.sendMessage(
+          chatId,
+          'ℹ️ Vui lòng gửi nội dung sau lệnh /test, ví dụ:\n/test Tin tức về USD và tỷ giá hối đoái...',
+        );
+        return;
+      }
 
       try {
         await this.bot?.sendMessage(chatId, '⏳ Đang phân tích...');
