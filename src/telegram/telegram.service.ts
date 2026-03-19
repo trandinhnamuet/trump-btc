@@ -178,6 +178,19 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // Suppress noisy polling errors (e.g. 404 when token is a placeholder)
+    // Without this handler the error event crashes the process.
+    (this.bot as any).on('polling_error', (err: Error) => {
+      const msg = err.message || String(err);
+      if (msg.includes('404') || msg.includes('401')) {
+        this.logger.warn(`Telegram polling: token không hợp lệ hoặc chưa cấu hình (${msg.split('\n')[0]}). Bot sẽ không nhận lệnh cho đến khi token đúng.`);
+        // Stop retrying — token won't fix itself at runtime
+        this.bot?.stopPolling();
+      } else {
+        this.logger.warn(`Telegram polling error: ${msg.split('\n')[0]}`);
+      }
+    });
+
     this.logger.log('Telegram Bot đã khởi tạo thành công (polling mode enabled)');
   }
 

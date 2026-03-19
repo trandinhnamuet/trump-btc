@@ -27,6 +27,10 @@ export class TruthSocialService {
       return posts;
     } catch (error) {
       this.logger.error("Truth Social fetch error: " + error.message);
+      // Re-throw rate-limit errors so PollingService backoff logic can fire
+      if (error.message && (error.message.includes('HTTP 403') || error.message.includes('HTTP 429'))) {
+        throw error;
+      }
       return [];
     }
   }

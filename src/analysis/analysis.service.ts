@@ -43,17 +43,44 @@ export class AnalysisService {
           messages: [
             {
               role: 'system',
-              content: `Bạn là chuyên gia phân tích tài chính cryptocurrency, chuyên đánh giá tác động của các sự kiện chính trị/kinh tế đến giá Bitcoin. 
-Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu cầu.`,
+              content: `Bạn là chuyên gia phân tích tài chính cấp cao chuyên về Bitcoin (BTC) với hiểu biết sâu về mối quan hệ giữa sự kiện vĩ mô và biến động giá crypto.
+
+KIẾN THỨC NỀN BẮT BUỘC ÁP DỤNG:
+
+1. BẢN CHẤT KÉP CỦA BTC:
+   - BTC là "risk asset": khi thị trường sợ hãi (risk-off), nhà đầu tư bán BTC cùng chứng khoán để giữ tiền mặt
+   - BTC là "safe haven / digital gold": khi mất niềm tin vào tiền tệ fiat hoặc hệ thống ngân hàng, dòng tiền chạy vào BTC
+   - PHÂN BIỆT: địa chính trị thông thường → risk-off → BTC giảm; khủng hoảng USD/ngân hàng/fiat → safe haven → BTC tăng
+
+2. CÁC NHÂN TỐ MẠNH NHẤT TÁC ĐỘNG BTC:
+   - Fed lãi suất / chính sách tiền tệ: tăng → thanh khoản rút → BTC giảm; cắt → bơm tiền → BTC tăng
+   - USD (DXY index): USD mạnh → BTC giảm; USD yếu → BTC tăng (tương quan nghịch)
+   - Quy định/thuế crypto trực tiếp: rất nhạy cảm, hướng rõ ràng theo nội dung
+   - Chiến tranh thương mại / thuế quan: ảnh hưởng gián tiếp qua triển vọng tăng trưởng và USD
+   - Giá dầu tăng đột biến → lạm phát → Fed hawkish → BTC giảm
+
+3. TIỀN LỆ LỊCH SỬ QUAN TRỌNG:
+   - Xung đột Ukraine 2022: BTC ban đầu giảm mạnh cùng cổ phiếu (risk-off), sau phục hồi nhanh
+   - Căng thẳng Trung Đông thông thường: tác động BTC rất nhỏ, không ổn định
+   - COVID crash 3/2020: BTC rơi -50% trong 2 ngày (risk-off tuyệt đối), sau tăng vọt do stimulus
+   - SVB bank collapse 3/2023: BTC TĂNG (safe haven khi ngân hàng sụp đổ)
+   - Announcement thuế Trump 4/2025: BTC giảm cùng cổ phiếu (global recession fear)
+
+4. NGUYÊN TẮC ĐỌC HƯỚNG TÁC ĐỘNG:
+   - Sự kiện làm suy yếu USD / tăng cung tiền / chống lại hệ thống tài chính truyền thống → BTC tăng
+   - Sự kiện làm tăng lo ngại suy thoái / thắt chặt thanh khoản / giảm appetite rủi ro → BTC giảm
+   - Sự kiện địa chính trị: đánh giá qua lăng kính "liệu có khiến Fed phải phản ứng không?" và "mức độ shock toàn cầu?"
+
+CHỈ trả về JSON theo format yêu cầu. KHÔNG thêm bất kỳ text nào khác.`,
             },
             {
               role: 'user',
               content: prompt,
             },
           ],
-          model: 'grok-4-latest',
-          temperature: 0.3,
-          max_tokens: 500,
+          model: 'grok-3',
+          temperature: 0.2,
+          max_tokens: 900,
         },
         {
           headers: {
@@ -111,23 +138,39 @@ Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu c
    * Yêu cầu OpenAI trả về JSON với format cụ thể.
    */
   private buildPrompt(content: string): string {
-    return `Phân tích bài đăng sau của Donald Trump trên Truth Social và đánh giá tác động lên giá Bitcoin (BTC):
+    return `Phân tích bài đăng sau của Donald Trump trên Truth Social và đánh giá tác động lên giá Bitcoin (BTC).
 
 BÀI VIẾT:
 "${content}"
 
-Hãy trả về JSON với format sau (KHÔNG thêm bất kỳ text nào khác):
-{
-  "summary": "Tóm tắt ngắn gọn nội dung bài viết bằng tiếng Việt (2-3 câu)",
-  "btcInfluenceProbability": <số nguyên từ 0 đến 100, là % khả năng bài viết này ảnh hưởng đến giá BTC>,
-  "btcDirection": <"increase" nếu có khả năng tăng, "decrease" nếu có khả năng giảm, "neutral" nếu trung lập>,
-  "reasoning": "Giải thích ngắn gọn lý do đánh giá (tiếng Việt, 1-2 câu)"
-}
+---
+THỰC HIỆN PHÂN TÍCH THEO 3 BƯỚC (thể hiện trong trường "reasoning"):
 
-Hướng dẫn đánh giá:
-- Xác suất cao (70-100%): Bài liên quan trực tiếp đến crypto/BTC, USD, chính sách tiền tệ, thuế, quan hệ Mỹ-Trung, chiến tranh thương mại, hoặc chính sách tài chính lớn
-- Xác suất trung bình (30-70%): Bài về kinh tế Mỹ, thị trường chứng khoán, lãi suất Fed, địa chính trị có thể ảnh hưởng gián tiếp
-- Xác suất thấp (0-30%): Bài về chính trị nội địa, xã hội, thể thao, giải trí không liên quan đến tài chính`;
+BƯỚC 1 - PHÂN LOẠI SỰ KIỆN:
+Xác định bài viết thuộc loại nào và tại sao:
+• Loại A – Crypto trực tiếp (70-100%): đề cập BTC/crypto, USD, Fed, lạm phát, quy định tài chính số, stablecoin
+• Loại B – Kinh tế vĩ mô (40-70%): thuế quan, chiến tranh thương mại Mỹ-Trung, chính sách tài khóa lớn, dầu mỏ/năng lượng có thể gây lạm phát
+• Loại C – Địa chính trị (15-50%): xung đột, căng thẳng quân sự — phải phân tích riêng: risk-off hay USD-crisis?
+• Loại D – Không liên quan (0-15%): chính trị nội địa, xã hội, thể thao
+
+BƯỚC 2 - CƠ CHẾ TÁC ĐỘNG (bắt buộc xét CẢ HAI chiều):
+• Con đường BTC TĂNG: sự kiện này có thể dẫn đến BTC tăng qua cơ chế nào cụ thể?
+• Con đường BTC GIẢM: sự kiện này có thể dẫn đến BTC giảm qua cơ chế nào cụ thể?
+• Tiền lệ: có sự kiện tương tự nào trong lịch sử? BTC đã phản ứng thế nào?
+
+BƯỚC 3 - KẾT LUẬN:
+• So sánh sức nặng của hai chiều trên → xác định hướng TRỘI HƠN
+• Xác định xác suất (0-100%) dựa trên mức độ liên quan thực sự tới thị trường tài chính/BTC
+• Giải thích tại sao hướng này được chọn thay vì hướng kia
+
+---
+Trả về JSON (KHÔNG thêm text nào khác ngoài JSON):
+{
+  "summary": "Tóm tắt nội dung bài viết bằng tiếng Việt (2-3 câu)",
+  "btcInfluenceProbability": <số nguyên 0-100>,
+  "btcDirection": <"increase" | "decrease" | "neutral">,
+  "reasoning": "Phân tích đầy đủ 3 bước: loại sự kiện → cơ chế tác động cụ thể cả hai chiều tăng/giảm có tiền lệ → kết luận rõ lý do chọn hướng này. Tối thiểu 5-6 câu, không được viết chung chung."
+}`;
   }
 
   /** Normalize giá trị direction từ OpenAI response */

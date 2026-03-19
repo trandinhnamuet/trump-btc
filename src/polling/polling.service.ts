@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { TruthSocialService } from '../truth-social/truth-social.service';
@@ -12,11 +12,11 @@ import { PostRecord, TruthSocialPost } from '../common/interfaces';
  * PollingService: Orchestrator chính của ứng dụng.
  *
  * Chịu trách nhiệm:
- * 1. Mỗi 30 giây: Kiểm tra bài viết mới của Trump trên Truth Social
+ * 1. Mỗi 90-120 giây: Kiểm tra bài viết mới của Trump trên Truth Social
  * 2. Mỗi 1 phút: Kiểm tra và cập nhật giá BTC tại các mốc (1h, 1 ngày, 7 ngày)
  */
 @Injectable()
-export class PollingService {
+export class PollingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PollingService.name);
 
   // Ngưỡng xác suất để gửi alert (lấy từ .env, mặc định 90%)
@@ -25,6 +25,13 @@ export class PollingService {
   // Flag để tránh chạy song song nếu lần poll trước chưa xong
   private isPolling = false;
   private isCheckingPrices = false;
+
+  // Dynamic polling fields
+  private pollTimer: NodeJS.Timeout | null = null;
+  private consecutive403 = 0;
+  private pauseUntil = 0;
+  private readonly POLL_MIN_MS = 90_000;  // 90 seconds
+  private readonly POLL_MAX_MS = 120_000; // 120 seconds
 
   constructor(
     private readonly truthSocialService: TruthSocialService,
@@ -40,12 +47,38 @@ export class PollingService {
     this.logger.log(`Ngưỡng gửi alert: ${this.threshold}% xác suất ảnh hưởng BTC`);
   }
 
-  // CRON JOB 1: Chạy mỗi 30 giây.
-  // Kiểm tra bài viết mới của Trump và xử lý chúng.
-  // Cú pháp "second minute hour day month weekday" (6 field, field đầu là giây)
-  @Cron('*/30 * * * * *')
+  onModuleInit() {
+    // Warm-up delay 10s then start dynamic polling at 90-120s intervals
+    this.schedulePoll(10_000);
+  }
+
+  onModuleDestroy() {
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  /** Schedule the next poll with a random 90-120s interval (or a custom delay for backoff). */
+  private schedulePoll(delayMs?: number) {
+    const jitter = this.POLL_MIN_MS + Math.floor(Math.random() * (this.POLL_MAX_MS - this.POLL_MIN_MS));
+    const delay = delayMs !== undefined ? delayMs : jitter;
+    this.pollTimer = setTimeout(async () => {
+      await this.pollTruthSocial();
+      // If still in backoff, wait out the remaining time before next poll
+      const remaining = this.pauseUntil - Date.now();
+      if (remaining > 0) {
+        this.logger.warn(`Next poll after backoff: ${Math.round(remaining / 60000)} phút nữa`);
+        this.schedulePoll(remaining + 5_000);
+      } else {
+        this.schedulePoll();
+      }
+    }, delay);
+    this.logger.debug(`Poll tiếp theo sau ${Math.round(delay / 1000)}s`);
+  }
+
+  /** Poll Truth Social for new posts. Called by schedulePoll. */
   async pollTruthSocial() {
-    // Tránh chạy concurrently nếu lần trước chưa xong
     if (this.isPolling) {
       this.logger.debug('Poll đang chạy, bỏ qua lần này...');
       return;
@@ -75,6 +108,9 @@ export class PollingService {
 
       // Các lần tiếp theo: lấy tất cả bài mới hơn lastPostId
       posts = await this.truthSocialService.getLatestPosts(lastPostId);
+      // Fetch thành công → reset backoff
+      this.consecutive403 = 0;
+      this.pauseUntil = 0;
 
       if (posts.length === 0) {
         this.logger.debug('Không có bài viết mới.');
@@ -88,7 +124,18 @@ export class PollingService {
         await this.processPost(post);
       }
     } catch (error) {
-      this.logger.error('Lỗi trong quá trình polling:', error.message);
+      const msg: string = (error && error.message) ? error.message : String(error);
+      if (msg.includes('HTTP 403')) {
+        // Exponential backoff: 5 min → 10 min → 20 min … cap 1 hour
+        this.consecutive403++;
+        const base = 5 * 60 * 1000;
+        const cap = 60 * 60 * 1000;
+        const backoffMs = Math.min(cap, base * Math.pow(2, this.consecutive403 - 1));
+        this.pauseUntil = Date.now() + backoffMs;
+        this.logger.warn(`Truth Social 403 (lần #${this.consecutive403}); backoff ${Math.round(backoffMs / 60000)} phút`);
+      } else {
+        this.logger.error('Lỗi trong quá trình polling:', msg);
+      }
     } finally {
       this.isPolling = false;
     }
