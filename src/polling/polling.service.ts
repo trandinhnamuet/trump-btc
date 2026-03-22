@@ -270,13 +270,17 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}) -> "${analysis.summary}"`,
       );
 
-      // Bước 4: Gửi alert nếu xác suất ảnh hưởng vượt ngưỡng
-      if (analysis.btcInfluenceProbability >= this.threshold) {
+      // Bước 4: Gửi alert nếu xác suất ảnh hưởng vượt ngưỡng và > 10%
+      if (analysis.btcInfluenceProbability > 10 && analysis.btcInfluenceProbability >= this.threshold) {
         this.logger.log(
           `🚨 XÁC SUẤT ${analysis.btcInfluenceProbability}% >= ${this.threshold}% → Gửi Telegram alert!`,
         );
         await this.telegramService.sendAlert(post, analysis, btcPrice);
         this.storageService.updatePost(post.id, { alerted: true });
+      } else if (analysis.btcInfluenceProbability <= 10) {
+        this.logger.log(
+          `ℹ️  Xác suất ${analysis.btcInfluenceProbability}% <= 10%, không gửi alert (biến động quá nhỏ)`,
+        );
       } else {
         this.logger.log(
           `➡️  Xác suất ${analysis.btcInfluenceProbability}% < ${this.threshold}%, không gửi alert (nhưng phân tích đã được lưu)`,

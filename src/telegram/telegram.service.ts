@@ -128,7 +128,9 @@ export class TelegramService implements OnModuleInit {
 ` +
         `💰 /btc — Xem giá BTC hiện tại
 ` +
-        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;80%
+        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50%
+` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất
 ` +
         `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản
 ` +
@@ -174,6 +176,34 @@ export class TelegramService implements OnModuleInit {
         });
       } catch (error) {
         this.logger.error(`❌ Lỗi /check: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
+    // Handle /check2 command (last 10 days only)
+    this.bot.onText(/^\/check2$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const now = new Date();
+        const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
+
+        const posts = this.storageService.getAllPosts();
+        const filtered = posts
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 50 && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        if (filtered.length === 0) {
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất.');
+          return;
+        }
+
+        const message = this.buildCheckMessage(filtered);
+        await this.bot?.sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        });
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /check2: ${error.message}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
       }
     });
