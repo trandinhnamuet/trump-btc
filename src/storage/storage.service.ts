@@ -121,6 +121,11 @@ export class StorageService implements OnModuleInit {
     return this.data.posts.find((p) => p.id === id);
   }
 
+  /** Lấy các bài viết chưa được phân tích (btcInfluenceProbability == null) */
+  getUnanalyzedPosts(): PostRecord[] {
+    return this.data.posts.filter((p) => p.btcInfluenceProbability == null);
+  }
+
   /** Lấy tất cả bài viết đã lưu */
   getAllPosts(): PostRecord[] {
     return this.data.posts;

@@ -50,6 +50,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
   onModuleInit() {
     // Warm-up delay 10s then start dynamic polling at 90-120s intervals
     this.schedulePoll(10_000);
+    // Backfill: re-process any stored posts that never got OpenAI analysis
+    setTimeout(() => this.reprocessUnanalyzed(), 5_000);
   }
 
   onModuleDestroy() {
@@ -75,6 +77,47 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       }
     }, delay);
     this.logger.debug(`Poll tiếp theo sau ${Math.round(delay / 1000)}s`);
+  }
+
+  /**
+   * Chạy 1 lần khi khởi động: re-process các bài trong storage chưa có phân tích OpenAI.
+   * Xảy ra khi app bị crash giữa chừng trước khi OpenAI trả về kết quả.
+   */
+  private async reprocessUnanalyzed() {
+    const unanalyzed = this.storageService.getUnanalyzedPosts();
+    if (unanalyzed.length === 0) return;
+
+    this.logger.log(`🔄 Backfill: tìm thấy ${unanalyzed.length} bài chưa được phân tích, đang xử lý lại...`);
+    for (const record of unanalyzed) {
+      const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url };
+      try {
+        const btcPrice = record.btcPriceAtPost ?? null;
+        const analysis = await this.analysisService.analyzePost(post.content);
+        this.storageService.updatePost(post.id, {
+          summary: analysis.summary,
+          btcInfluenceProbability: analysis.btcInfluenceProbability,
+          btcDirection: analysis.btcDirection,
+          reasoning: analysis.reasoning,
+        });
+        this.logger.log(
+          `🔄 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`,
+        );
+        if (analysis.btcInfluenceProbability > 10 && analysis.btcInfluenceProbability >= this.threshold) {
+          this.logger.log(`🚨 Backfill: gửi Telegram alert cho bài ${post.id}!`);
+          await this.telegramService.sendAlert(
+            { id: post.id, content: post.content, createdAt: post.createdAt, url: post.url },
+            analysis,
+            btcPrice,
+          );
+          this.storageService.updatePost(post.id, { alerted: true });
+        } else {
+          this.logger.log(`ℹ️  Backfill bài ${post.id}: xác suất ${analysis.btcInfluenceProbability}% - không gửi alert`);
+        }
+      } catch (err) {
+        this.logger.error(`Backfill lỗi bài ${post.id}:`, err.message);
+      }
+    }
+    this.logger.log('🔄 Backfill hoàn tất.');
   }
 
   /** Poll Truth Social for new posts. Called by schedulePoll. */
