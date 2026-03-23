@@ -154,18 +154,3 @@ Respond with ONLY valid JSON — no extra text:
     return 'neutral';
   }
 }
-
-
-/**
- * AnalysisService: PhÃ¢n tÃ­ch bÃ i viáº¿t Trump báº±ng Grok AI + Ensemble Scoring.
- *
- * Pipeline má»›i (3 táº§ng):
- * 1. Rule-based Severity (SeverityService) â†’ severityScore + hardRule
- * 2. Grok AI (LLM) â†’ modelProb + direction + reasoning
- * 3. Market Signal (MarketSignalService) â†’ marketSignalScore
- *
- * Ensemble combiner:
- *   ensembleProb = 0.50 * modelProb + 0.35 * severity*100 + 0.15 * market*100
- *   â†’ Náº¿u hardRule = true â†’ override: ensembleProb = max(ensembleProb, MIN_HARD_PROB)
- *
- * Trá»ng sá»‘ cÃ³ thá»ƒ cáº­p nháº­t sau khi cÃ³ dá»¯ liá»‡u backtest.
