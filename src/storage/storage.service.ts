@@ -116,6 +116,11 @@ export class StorageService implements OnModuleInit {
     return result;
   }
 
+  /** Lấy một bài viết theo ID */
+  getPostById(id: string): PostRecord | undefined {
+    return this.data.posts.find((p) => p.id === id);
+  }
+
   /** Lấy tất cả bài viết đã lưu */
   getAllPosts(): PostRecord[] {
     return this.data.posts;

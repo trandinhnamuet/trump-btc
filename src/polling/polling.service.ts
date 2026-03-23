@@ -228,6 +228,14 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Đang xử lý bài viết: ${post.id} (${post.createdAt})`);
     this.logger.log(`Nội dung: ${post.content.substring(0, 100)}...`);
 
+    // Bước 0: Bỏ qua nếu bài đã được phân tích thành công trước đó
+    const existing = this.storageService.getPostById(post.id);
+    if (existing?.btcInfluenceProbability != null) {
+      this.logger.log(`Bài ${post.id} đã được phân tích trước đó (${existing.btcInfluenceProbability}%), bỏ qua.`);
+      this.storageService.setLastPostId(post.id);
+      return;
+    }
+
     const postTime = new Date(post.createdAt);
 
     // Bước 1: Lấy giá BTC hiện tại (trước khi phân tích để có timestamp chính xác)
@@ -253,6 +261,11 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     };
 
     this.storageService.savePost(record);
+
+    // ⭐ Cập nhật lastPostId NGAY SAU KHI lưu bài - trước khi gọi OpenAI
+    // Tránh tình huống app crash giữa chừng khiến poll sau tìm lại bài cũ
+    this.storageService.setLastPostId(post.id);
+    this.logger.debug(`lastPostId cập nhật → ${post.id}`);
 
     // Bước 3: Phân tích bằng OpenAI
     try {
@@ -291,8 +304,6 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}:`, error.message);
     }
 
-    // Bước 5: Cập nhật lastPostId SAU KHI xử lý xong bài này
-    this.storageService.setLastPostId(post.id);
     this.logger.log(`✅ Đã xử lý xong bài ${post.id}`);
   }
 
