@@ -102,17 +102,19 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(
           `🔄 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`,
         );
-        if (analysis.btcInfluenceProbability > 10 && analysis.btcInfluenceProbability >= this.threshold) {
-          this.logger.log(`🚨 Backfill: gửi Telegram alert cho bài ${post.id}!`);
-          await this.telegramService.sendAlert(
-            { id: post.id, content: post.content, createdAt: post.createdAt, url: post.url },
-            analysis,
-            btcPrice,
-          );
-          this.storageService.updatePost(post.id, { alerted: true });
-        } else {
-          this.logger.log(`ℹ️  Backfill bài ${post.id}: xác suất ${analysis.btcInfluenceProbability}% - không gửi alert`);
-        }
+        const silent = analysis.btcInfluenceProbability < 10;
+        this.logger.log(
+          silent
+            ? `📋 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% < 10% → Gửi silent`
+            : `🚨 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% >= 10% → Gửi alert!`,
+        );
+        await this.telegramService.sendAlert(
+          { id: post.id, content: post.content, createdAt: post.createdAt, url: post.url },
+          analysis,
+          btcPrice,
+          silent,
+        );
+        this.storageService.updatePost(post.id, { alerted: true });
       } catch (err) {
         this.logger.error(`Backfill lỗi bài ${post.id}:`, err.message);
       }
@@ -326,22 +328,15 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}) -> "${analysis.summary}"`,
       );
 
-      // Bước 4: Gửi alert nếu xác suất ảnh hưởng vượt ngưỡng và > 10%
-      if (analysis.btcInfluenceProbability > 10 && analysis.btcInfluenceProbability >= this.threshold) {
-        this.logger.log(
-          `🚨 XÁC SUẤT ${analysis.btcInfluenceProbability}% >= ${this.threshold}% → Gửi Telegram alert!`,
-        );
-        await this.telegramService.sendAlert(post, analysis, btcPrice);
-        this.storageService.updatePost(post.id, { alerted: true });
-      } else if (analysis.btcInfluenceProbability <= 10) {
-        this.logger.log(
-          `ℹ️  Xác suất ${analysis.btcInfluenceProbability}% <= 10%, không gửi alert (biến động quá nhỏ)`,
-        );
-      } else {
-        this.logger.log(
-          `➡️  Xác suất ${analysis.btcInfluenceProbability}% < ${this.threshold}%, không gửi alert (nhưng phân tích đã được lưu)`,
-        );
-      }
+      // Bước 4: Luôn gửi Telegram. Silent nếu xác suất < 10%, có âm thanh nếu >= 10%
+      const silent = analysis.btcInfluenceProbability < 10;
+      this.logger.log(
+        silent
+          ? `📋 Xác suất ${analysis.btcInfluenceProbability}% < 10% → Gửi silent`
+          : `🚨 XÁC SUẤT ${analysis.btcInfluenceProbability}% >= 10% → Gửi Telegram alert!`,
+      );
+      await this.telegramService.sendAlert(post, analysis, btcPrice, silent);
+      this.storageService.updatePost(post.id, { alerted: true });
     } catch (error) {
       // Nếu OpenAI lỗi, vẫn tiếp tục (đã lưu basic data, sẽ thiếu analysis)
       this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}:`, error.message);

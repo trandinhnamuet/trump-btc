@@ -282,11 +282,13 @@ export class TelegramService implements OnModuleInit {
    * @param post Bài viết gốc của Trump
    * @param analysis Kết quả phân tích OpenAI
    * @param btcPrice Giá BTC hiện tại (USD)
+   * @param silent Nếu true: gửi không có âm thanh (xác suất < 10%)
    */
   async sendAlert(
     post: TruthSocialPost,
     analysis: AnalysisResult,
     btcPrice: number | null,
+    silent = false,
   ): Promise<void> {
     if (!this.bot) {
       this.logger.warn('Telegram Bot chưa được cấu hình, bỏ qua alert');
@@ -301,7 +303,7 @@ export class TelegramService implements OnModuleInit {
     // Tải lại danh sách users từ file (cho phép cập nhật hot reload)
     this.loadUsers();
 
-    const message = this.buildMessage(post, analysis, btcPrice);
+    const message = this.buildMessage(post, analysis, btcPrice, silent);
 
     // Lưu bản ghi alert vào file log (để audit sau này)
     try {
@@ -316,10 +318,12 @@ export class TelegramService implements OnModuleInit {
       try {
         await this.bot.sendMessage(user.chatId, message, {
           parse_mode: 'HTML',
-          // Disable preview cho URL để tin nhắn gọn hơn
           disable_web_page_preview: true,
+          disable_notification: silent,
         });
-        this.logger.log(`Đã gửi alert đến ${user.name} (${user.chatId})`);
+        this.logger.log(
+          `Đã gửi alert đến ${user.name} (${user.chatId})${silent ? ' [silent]' : ''}`,
+        );
       } catch (error) {
         // Không throw - tiếp tục gửi cho các user khác dù 1 user lỗi
         this.logger.error(
@@ -370,7 +374,11 @@ export class TelegramService implements OnModuleInit {
     post: TruthSocialPost,
     analysis: AnalysisResult,
     btcPrice: number | null,
+    silent = false,
   ): string {
+    const header = silent
+      ? '📋 <b>TRUMP POST</b> <i>(xác suất thấp)</i>'
+      : '🚨 <b>TRUMP POST - BTC ALERT!</b>';
     // Build direction indicator with arrow
     let directionDisplay = '';
     if (analysis.btcDirection === 'increase') {
@@ -395,7 +403,7 @@ export class TelegramService implements OnModuleInit {
     const preview =
       post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content;
 
-    return `🚨 <b>TRUMP POST - BTC ALERT!</b>
+    return `${header}
 
 📢 <b>Bài viết gốc:</b>
 <i>${preview}</i>
