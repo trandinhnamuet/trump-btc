@@ -389,7 +389,8 @@ export class TelegramService implements OnModuleInit {
       directionDisplay = '─ TRUNG LẬP';
     }
 
-    const probabilityBar = this.buildProbabilityBar(analysis.btcInfluenceProbability, analysis.btcDirection);
+    const ensembleProb = analysis.ensembleProbability ?? analysis.btcInfluenceProbability;
+    const probabilityBar = this.buildProbabilityBar(ensembleProb, analysis.btcDirection);
 
     const btcPriceText = btcPrice
       ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
@@ -403,6 +404,16 @@ export class TelegramService implements OnModuleInit {
     const preview =
       post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content;
 
+    // Breakdown line: model / severity / market
+    const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
+    const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
+    const breakdownLine = `<i>🤖 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
+
+    // Hard rule warning
+    const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length
+      ? `\n⚠️ <b>HARD RULE:</b> <i>${analysis.matchedRules.join(', ')}</i>`
+      : '';
+
     return `${header}
 
 📢 <b>Bài viết gốc:</b>
@@ -413,8 +424,9 @@ ${analysis.summary}
 
 💡 <b>Lý do:</b> ${analysis.reasoning}
 
-📊 <b>Xác suất ảnh hưởng BTC:</b>
-${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b>
+📊 <b>Ensemble Score:</b>
+${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
+${breakdownLine}${hardRuleLine}
 
 💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}
 
@@ -489,7 +501,8 @@ ${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b
     analysis: AnalysisResult,
     btcPrice: number | null,
   ): string {
-    const probabilityBar = this.buildProbabilityBar(analysis.btcInfluenceProbability, analysis.btcDirection);
+    const ensembleProb = analysis.ensembleProbability ?? analysis.btcInfluenceProbability;
+    const probabilityBar = this.buildProbabilityBar(ensembleProb, analysis.btcDirection);
 
     const btcPriceText = btcPrice
       ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
@@ -509,6 +522,16 @@ ${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b
       directionDisplay = '─ TRUNG LẬP';
     }
 
+    // Breakdown line: model / severity / market
+    const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
+    const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
+    const breakdownLine = `<i>🤖 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
+
+    // Hard rule warning
+    const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length
+      ? `\n⚠️ <b>HARD RULE:</b> <i>${analysis.matchedRules.join(', ')}</i>`
+      : '';
+
     return `📋 <b>TEST PHÂN TÍCH</b>
 
 📝 <b>Nội dung:</b>
@@ -519,8 +542,9 @@ ${analysis.summary}
 
 💡 <b>Lý do:</b> ${analysis.reasoning}
 
-📊 <b>Xác suất ảnh hưởng BTC:</b>
-${probabilityBar} <b>${analysis.btcInfluenceProbability}% ${directionDisplay}</b>
+📊 <b>Ensemble Score:</b>
+${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
+${breakdownLine}${hardRuleLine}
 
 💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}`;
   }

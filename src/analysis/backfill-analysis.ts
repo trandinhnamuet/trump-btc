@@ -92,11 +92,17 @@ Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu c
   if (!messageContent) throw new Error('Grok trả về response rỗng');
 
   const parsed = JSON.parse(messageContent) as any;
+  const modelProb = Math.min(100, Math.max(0, Number(parsed.btcInfluenceProbability) || 0));
   return {
     summary: parsed.summary || 'Không thể tóm tắt',
-    btcInfluenceProbability: Math.min(100, Math.max(0, Number(parsed.btcInfluenceProbability) || 0)),
+    btcInfluenceProbability: modelProb,
     btcDirection: normalizeDirection(parsed.btcDirection),
     reasoning: parsed.reasoning || '',
+    ensembleProbability: modelProb,
+    severityScore: 0,
+    marketSignalScore: 0,
+    hardRule: false,
+    matchedRules: [],
   };
 }
 

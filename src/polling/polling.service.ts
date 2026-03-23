@@ -96,17 +96,24 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         this.storageService.updatePost(post.id, {
           summary: analysis.summary,
           btcInfluenceProbability: analysis.btcInfluenceProbability,
+          ensembleProbability: analysis.ensembleProbability,
+          severityScore: analysis.severityScore,
+          marketSignalScore: analysis.marketSignalScore,
+          hardRule: analysis.hardRule,
+          matchedRules: analysis.matchedRules,
           btcDirection: analysis.btcDirection,
           reasoning: analysis.reasoning,
         });
         this.logger.log(
-          `🔄 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`,
+          `🔄 Backfill bài ${post.id}: model=${analysis.btcInfluenceProbability}% ensemble=${analysis.ensembleProbability}% (${analysis.btcDirection})${
+            analysis.hardRule ? ' ⚠️ HARD RULE' : ''
+          }`,
         );
-        const silent = analysis.btcInfluenceProbability < 10;
+        const silent = analysis.ensembleProbability < 10;
         this.logger.log(
           silent
-            ? `📋 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% < 10% → Gửi silent`
-            : `🚨 Backfill bài ${post.id}: ${analysis.btcInfluenceProbability}% >= 10% → Gửi alert!`,
+            ? `📋 Backfill bài ${post.id}: ensemble ${analysis.ensembleProbability}% < 10% → Gửi silent`
+            : `🚨 Backfill bài ${post.id}: ensemble ${analysis.ensembleProbability}% >= 10% → Gửi alert!`,
         );
         await this.telegramService.sendAlert(
           { id: post.id, content: post.content, createdAt: post.createdAt, url: post.url },
@@ -321,19 +328,26 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       this.storageService.updatePost(post.id, {
         summary: analysis.summary,
         btcInfluenceProbability: analysis.btcInfluenceProbability,
+        ensembleProbability: analysis.ensembleProbability,
+        severityScore: analysis.severityScore,
+        marketSignalScore: analysis.marketSignalScore,
+        hardRule: analysis.hardRule,
+        matchedRules: analysis.matchedRules,
         btcDirection: analysis.btcDirection,
         reasoning: analysis.reasoning,
       });
       this.logger.log(
-        `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}) -> "${analysis.summary}"`,
+        `📊 Đã lưu phân tích bài ${post.id}: model=${analysis.btcInfluenceProbability}% ensemble=${analysis.ensembleProbability}% (${analysis.btcDirection})${
+          analysis.hardRule ? ' ⚠️ HARD RULE' : ''
+        }`,
       );
 
-      // Bước 4: Luôn gửi Telegram. Silent nếu xác suất < 10%, có âm thanh nếu >= 10%
-      const silent = analysis.btcInfluenceProbability < 10;
+      // Bước 4: Luôn gửi Telegram. Dùng ensembleProbability cho quyết định silent vs. alert
+      const silent = analysis.ensembleProbability < 10;
       this.logger.log(
         silent
-          ? `📋 Xác suất ${analysis.btcInfluenceProbability}% < 10% → Gửi silent`
-          : `🚨 XÁC SUẤT ${analysis.btcInfluenceProbability}% >= 10% → Gửi Telegram alert!`,
+          ? `📋 Ensemble ${analysis.ensembleProbability}% < 10% → Gửi silent`
+          : `🚨 ENSEMBLE ${analysis.ensembleProbability}% >= 10% → Gửi Telegram alert!`,
       );
       await this.telegramService.sendAlert(post, analysis, btcPrice, silent);
       this.storageService.updatePost(post.id, { alerted: true });

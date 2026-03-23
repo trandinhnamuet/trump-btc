@@ -13,9 +13,16 @@ export interface TruthSocialPost {
 /** Kết quả phân tích từ OpenAI */
 export interface AnalysisResult {
   summary: string; // Tóm tắt ngắn gọn
-  btcInfluenceProbability: number; // 0-100
+  btcInfluenceProbability: number; // 0-100 (raw model output)
   btcDirection: 'increase' | 'decrease' | 'neutral'; // Hướng ảnh hưởng
   reasoning: string; // Lý do
+
+  // Ensemble scoring
+  ensembleProbability: number;  // 0-100 (sau khi kết hợp model + severity + market)
+  severityScore: number;        // 0-1 (rule-based severity)
+  marketSignalScore: number;    // 0-1 (biến động thị trường ngắn hạn)
+  hardRule: boolean;            // true = hard rule override kích hoạt
+  matchedRules: string[];       // Danh sách rule đã khớp
 }
 
 /** Thông tin người dùng Telegram */
@@ -37,12 +44,19 @@ export interface PostRecord {
   url: string;
   fetchedAt: string;
 
-  // Kết quả phân tích OpenAI
+  // Kết quả phân tích
   summary?: string;
-  btcInfluenceProbability?: number;
+  btcInfluenceProbability?: number;  // raw model
   btcDirection?: 'increase' | 'decrease' | 'neutral';
   reasoning?: string;
   alerted?: boolean; // Đã gửi Telegram alert hay chưa
+
+  // Ensemble scores
+  ensembleProbability?: number;   // xác suất cuối sau ensemble
+  severityScore?: number;         // điểm rule-based
+  marketSignalScore?: number;     // điểm tín hiệu thị trường
+  hardRule?: boolean;             // hard rule có kích hoạt không
+  matchedRules?: string[];        // các rule đã khớp
 
   // Giá BTC tại các mốc thời gian
   btcPriceAtPost?: number; // Giá lúc đăng bài
