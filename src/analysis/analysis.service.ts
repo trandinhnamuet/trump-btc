@@ -65,8 +65,9 @@ export class AnalysisService {
           {
             role: 'system',
             content:
-              'You are an expert Bitcoin market analyst. You deeply understand how news, geopolitics, and macro events affect market psychology and BTC price action. ' +
-              'You reason from first principles, not templates. Every analysis is specific to the post and the current market state.',
+              'Bạn là chuyên gia phân tích thị trường Bitcoin hàng đầu, am hiểu sâu về cách tin tức, chính trị, và sự kiện vĩ mô tác động đến tâm lý thị trường và giá BTC. ' +
+              'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
+              'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
           },
           { role: 'user', content: prompt },
         ],
@@ -104,46 +105,60 @@ export class AnalysisService {
     };
   }
 
+
   private buildPrompt(content: string, market: MarketContextResult): string {
-    const fmt  = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : 'N/A';
-    const chg  = (n: number) => (n >= 0 ? `+${n}` : `${n}`) + '%';
+    const fmt = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : 'N/A';
+    const chg = (n: number) => (n >= 0 ? `+${n}` : `${n}`) + '%';
 
     const marketBlock = market.currentPrice > 0
       ? [
-          '=== LIVE BTC MARKET DATA ===',
-          `Price:    ${fmt(market.currentPrice)}`,
-          `24h:      ${chg(market.change24h)}`,
-          `7d:       ${chg(market.change7d)}`,
-          `30d:      ${chg(market.change30d)}`,
-          `52w range: ${fmt(market.low52w)} – ${fmt(market.high52w)}`,
-          `From 52w high: ${market.pctFromHigh52w}%`,
-          `Market state: ${market.trendLabel}`,
-          '============================',
+          '=== DU LIEU THI TRUONG BTC HIEN TAI ===',
+          `Gia hien tai: ${fmt(market.currentPrice)}`,
+          `24h:          ${chg(market.change24h)}`,
+          `7 ngay:       ${chg(market.change7d)}`,
+          `30 ngay:      ${chg(market.change30d)}`,
+          `Bien do 52 tuan: ${fmt(market.low52w)} - ${fmt(market.high52w)}`,
+          `Cach dinh 52 tuan: ${market.pctFromHigh52w}%`,
+          `Trang thai: ${market.trendLabel}`,
+          '========================================',
         ].join('\n')
-      : '(Market data unavailable — analyze based on post content only)';
+      : '(Khong co du lieu thi truong)';
 
-    return `Analyze the following Trump Truth Social post and assess how likely it is to cause a meaningful BTC price move.
+    const distFromHigh = market.pctFromHigh52w < -5
+      ? `cach dinh 52 tuan ${Math.abs(market.pctFromHigh52w)}%`
+      : 'gan dinh 52 tuan';
 
-POST:
+    return `Phan tich bai dang sau cua Donald Trump tren Truth Social.
+
+BAI VIET:
 "${content}"
 
 ${marketBlock}
 
-For your analysis, consider:
-- Would this news genuinely change how traders/investors perceive risk right now? Or is it noise?
-- What is the PSYCHOLOGICAL impact on retail and institutional participants? Fear, greed, indifference?
-- Does this affect the macro narrative currently driving BTC (liquidity, regulatory climate, USD strength, risk appetite)?
-- Given the current market state (${market.trendLabel}), is BTC fragile or resilient to this type of shock?
-- What’s the realistic probability this actually moves BTC in the next 24-48h vs. just being background noise?
+HUONG DAN PHAN TICH - suy nghi theo cac goc do lien quan nhat:
 
-Do NOT follow a rigid analysis template. Your reasoning should be organic and specific to THIS post.
+1. TAC DONG TAM LY: Tin nay gay cam xuc gi cho nha dau tu? Hung khoi, so hai, hay tho o?
+2. CO CHE TAC DONG DEN BTC: Dong tien dich chuyen qua kenh nao?
+3. DO MOI: Thi truong da dinh gia thong tin nay chua?
+4. THUC TE: Day la hanh dong cu the hay chi tuyen bo y dinh?
+5. BOI CANH: BTC dang ${distFromHigh}, xu huong "${market.trendLabel}".
 
-Respond with ONLY valid JSON — no extra text:
+CALIBRATION XAC SUAT:
+- 0-10%: Khong lien quan kinh te/tai chinh
+- 10-30%: Tac dong gian tiep, yeu
+- 30-55%: Kinh te vi mo ro rang (thue quan, thuong chien, suy thoai, Fed)
+- 55-75%: TRUC TIEP lien quan crypto/Bitcoin/USD (EO ve crypto, chinh sach quy dinh)
+- 75-90%: Su kien dot pha bat ngo (My chinh thuc Bitcoin reserve, SEC approve ETF)
+- 90-100%: Su kien lich su cuc hiem
+
+LU Y: Khong duoc danh gia thap tin crypto truc tiep. EO cua Trump ve Crypto Strategic Reserve phai >= 70%.
+
+Tra ve ONLY valid JSON:
 {
-  "summary": "2-3 câu tóm tắt nội dung bài viết bằng tiếng Việt",
-  "btcInfluenceProbability": <integer 0-100>,
+  "summary": "2-3 cau tom tat bang tieng Viet",
+  "btcInfluenceProbability": <so nguyen 0-100>,
   "btcDirection": <"increase" | "decrease" | "neutral">,
-  "reasoning": "Specific analysis for THIS post in context of current market. Explain the concrete chain of events from post → market psychology → BTC price. Reference current market conditions where relevant. No template, no bullet points. Minimum 4-5 sentences."
+  "reasoning": "Phan tich cu the, giai thich chuoi tac dong tu noi dung -> tam ly -> gia BTC. Toi thieu 4-5 cau. BAT BUOC VIET BANG TIENG VIET."
 }`;
   }
 
