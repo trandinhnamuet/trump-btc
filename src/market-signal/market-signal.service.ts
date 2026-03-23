@@ -1,73 +1,95 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 
 /**
- * MarketSignalService: Thu thập tín hiệu ngắn hạn từ thị trường.
+ * MarketSignalService v2: Cung cáº¥p bá»™i cáº£nh thá»‹ trÆ°á»ng Ä‘áº§y Ä‘á»§ cho Grok AI phÃ¢n tÃ­ch.
  *
- * Sử dụng Binance Klines API để lấy nến BTC 15m gần nhất,
- * tính momentum (% thay đổi trong 15m và 1h) → normalize → trả ra marketSignalScore.
+ * Thu tháº­p tá»« Binance:
+ *   - Dáº¡i hÃ ng ngÃ y (32 phiÃªn) â†’ 24h / 7d / 30d % change
+ *   - Tuáº§n (53 phiáº¿n) â†’ 52-week high & low
  *
- * score cao → thị trường đang biến động mạnh → ensemble boost probability.
- *
- * Không cần API key — dùng Binance public endpoint.
+ * Táº¥t cáº£ dá»¯ liá»‡u nÃ y Ä‘Æ°á»£c Ä‘Æ°a vÃ o prompt cá»§a Grok thay vÃ¬ dÃ¹ng lÃ m trá»ng sá»‘ ensemble.
  */
 
-export interface MarketSignalResult {
-  btcChange15m: number | null;   // % thay đổi BTC so với 15 phút trước
-  btcChange1h: number | null;    // % thay đổi BTC so với 1 giờ trước
-  marketSignalScore: number;     // 0.0 – 1.0 (mức độ biến động thị trường)
-  direction: 'increase' | 'decrease' | 'neutral';
+export interface MarketContextResult {
+  currentPrice:    number;   // GiÃ¡ hiá»‡n táº¡i
+  change24h:       number;   // % thay Ä‘á»•i 24h
+  change7d:        number;   // % thay Ä‘á»•i 7 ngÃ y
+  change30d:       number;   // % thay Ä‘á»•i 30 ngÃ y
+  high52w:         number;   // Äá»‰nh 52 tuáº§n
+  low52w:          number;   // ÄÃ¡y 52 tuáº§n
+  pctFromHigh52w:  number;   // % cÃ¡ch Ä‘á»‰nh 52w (sá»‘ Ã¢m = Ä‘ang lÃ³ xuá»‘ng)
+  trendLabel:      string;   // MÃ´ táº£ tráº¡ng thÃ¡i thá»‹ trÆ°á»ng báº±ng tiáº¿ng Anh
+  marketSignalScore: number; // 0â€“1, giá»¯ láº¡i Ä‘á»ƒ logging
 }
 
 @Injectable()
 export class MarketSignalService {
   private readonly logger = new Logger(MarketSignalService.name);
+  private readonly BINANCE = 'https://api.binance.com';
 
-  // Binance Klines: lấy 5 nến 15m (đủ để tính 1h = 4 nến x 15m)
-  private readonly KLINES_URL = 'https://api.binance.com/api/v3/klines';
-
-  async getMarketSignal(): Promise<MarketSignalResult> {
+  async getMarketContext(): Promise<MarketContextResult> {
     try {
-      // Lấy 5 nến 15m gần nhất (75 phút)
-      const resp = await axios.get<any[][]>(this.KLINES_URL, {
-        params: { symbol: 'BTCUSDT', interval: '15m', limit: 5 },
-        timeout: 5000,
-      });
+      const [dailyRes, weeklyRes] = await Promise.all([
+        axios.get(`${this.BINANCE}/api/v3/klines`, {
+          params: { symbol: 'BTCUSDT', interval: '1d', limit: 32 },
+          timeout: 6000,
+        }),
+        axios.get(`${this.BINANCE}/api/v3/klines`, {
+          params: { symbol: 'BTCUSDT', interval: '1w', limit: 53 },
+          timeout: 6000,
+        }),
+      ]);
 
-      const klines = resp.data;
-      if (!klines || klines.length < 4) {
-        this.logger.warn('Không đủ dữ liệu kline để tính market signal');
-        return this.neutral();
-      }
+      const daily: Array<Array<string | number>> = dailyRes.data;
+      const weekly: Array<Array<string | number>> = weeklyRes.data;
 
-      // Kline index: [0]=openTime [1]=open [2]=high [3]=low [4]=close [5]=volume
-      const currentClose = parseFloat(klines[klines.length - 1][4]);
-      const prev1Close = parseFloat(klines[klines.length - 2][4]); // ~15m trước
-      const prev4Close = parseFloat(klines[0][4]);                  // ~60m trước
+      // daily[n-1] = phiáº¿n hiá»‡n táº¡i (cÃ³ thá»ƒ chÆ°a Ä‘Ã³ng), daily[n-2] = hÃ´m qua...
+      const n            = daily.length;
+      const currentPrice = parseFloat(String(daily[n - 1][4]));
+      const price24hAgo  = parseFloat(String(daily[n - 2][4]));
+      const price7dAgo   = parseFloat(String(daily[Math.max(0, n - 8)][4]));
+      const price30dAgo  = parseFloat(String(daily[0][4]));
 
-      const change15m = ((currentClose - prev1Close) / prev1Close) * 100;
-      const change1h = ((currentClose - prev4Close) / prev4Close) * 100;
+      const pct = (a: number, b: number) => +((a - b) / b * 100).toFixed(2);
+      const change24h  = pct(currentPrice, price24hAgo);
+      const change7d   = pct(currentPrice, price7dAgo);
+      const change30d  = pct(currentPrice, price30dAgo);
 
-      // Score = abs(thay đổi 1h) chuẩn hoá:
-      // |0%| → 0.0,  |1%| → 0.33,  |2%| → 0.55,  |3%| → 0.75,  |5%+| → 1.0
-      const absChange = Math.abs(change1h);
-      const marketSignalScore = Math.min(1.0, absChange / 5.0);
+      const high52w        = Math.max(...weekly.map(k => parseFloat(String(k[2]))));
+      const low52w         = Math.min(...weekly.map(k => parseFloat(String(k[3]))));
+      const pctFromHigh52w = pct(currentPrice, high52w);
 
-      const direction: 'increase' | 'decrease' | 'neutral' =
-        change1h > 0.3 ? 'increase' : change1h < -0.3 ? 'decrease' : 'neutral';
+      const trendLabel      = this.computeTrendLabel(change30d, pctFromHigh52w, change7d);
+      const marketSignalScore = Math.min(1.0, Math.abs(change24h) / 5.0);
 
       this.logger.debug(
-        `Market signal → BTC 15m: ${change15m.toFixed(2)}%, 1h: ${change1h.toFixed(2)}% → score=${marketSignalScore.toFixed(2)}`,
+        `Market context: $${currentPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })} ` +
+        `| 24h=${change24h}% | 7d=${change7d}% | 30d=${change30d}% ` +
+        `| from52wHigh=${pctFromHigh52w}% | ${trendLabel}`,
       );
 
-      return { btcChange15m: change15m, btcChange1h: change1h, marketSignalScore, direction };
+      return { currentPrice, change24h, change7d, change30d, high52w, low52w, pctFromHigh52w, trendLabel, marketSignalScore };
     } catch (err) {
-      this.logger.warn(`Không lấy được market signal: ${err.message}`);
-      return this.neutral();
+      this.logger.warn(`KhÃ´ng láº¥y Ä‘Æ°á»£c market context: ${(err as Error).message}`);
+      return {
+        currentPrice: 0, change24h: 0, change7d: 0, change30d: 0,
+        high52w: 0, low52w: 0, pctFromHigh52w: 0,
+        trendLabel: 'unknown (market data unavailable)',
+        marketSignalScore: 0,
+      };
     }
   }
 
-  private neutral(): MarketSignalResult {
-    return { btcChange15m: null, btcChange1h: null, marketSignalScore: 0, direction: 'neutral' };
+  private computeTrendLabel(change30d: number, pctFromHigh52w: number, change7d: number): string {
+    if (pctFromHigh52w > -5)                        return 'near 52-week high â€” potential distribution zone, fragile';
+    if (pctFromHigh52w > -15 && change30d > 15)     return 'strong bull trend, approaching ATH zone';
+    if (change30d > 20)                             return 'strong bull run â€” momentum high, sentiment euphoric';
+    if (change30d > 8)                              return 'bull trend â€” positive sentiment, buying pressure';
+    if (change30d > -5 && change7d > 3)             return 'consolidation / early recovery â€” cautious optimism';
+    if (change30d > -5)                             return 'ranging sideways â€” no strong directional bias';
+    if (change30d > -20)                            return 'bear correction â€” negative sentiment, risk-off mode';
+    return 'deep bear market â€” fear dominant, capitulation risk';
   }
 }
+
