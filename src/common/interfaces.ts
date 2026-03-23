@@ -29,6 +29,7 @@ export interface AnalysisResult {
 export interface TelegramUser {
   chatId: string;
   name: string;
+  threshold?: number; // Ngưỡng xác suất riêng (0-100). Nếu không set → dùng BTC_INFLUENCE_THRESHOLD từ .env
 }
 
 /** Cấu hình danh sách user (lưu trong data/users.json) */

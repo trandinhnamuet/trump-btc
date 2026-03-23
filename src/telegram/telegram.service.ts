@@ -27,12 +27,20 @@ export class TelegramService implements OnModuleInit {
   // File log lưu các alert đã gửi (JSON per line)
   private readonly alertsFile = path.join(process.cwd(), 'data', 'alerts.log');
 
+  // Ngưỡng mặc định toàn cục từ .env (dùng khi user chưa set /thr)
+  private readonly globalThreshold: number;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
     private readonly storageService: StorageService,
-  ) {}
+  ) {
+    this.globalThreshold = parseInt(
+      this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '0',
+      10,
+    );
+  }
 
   /** Khởi tạo bot và load danh sách users khi app start */
   onModuleInit() {
@@ -118,22 +126,59 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // Handle /thr command — set per-user alert threshold
+    this.bot.onText(/^\/thr(?:\s+(\d+))?$/, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const numStr = match?.[1];
+
+      // No argument → show current threshold
+      if (!numStr) {
+        const user = this.users.find(u => u.chatId === chatId);
+        if (!user) {
+          await this.bot?.sendMessage(chatId, '❌ Bạn chưa đăng ký. Gửi /start trước.');
+          return;
+        }
+        const current = user.threshold ?? this.globalThreshold;
+        await this.bot?.sendMessage(
+          chatId,
+          `📊 <b>Ngưỡng thông báo của bạn:</b> <b>${current}%</b>\n\nDùng <code>/thr 60</code> để đặt ngưỡng mới (0–100).`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const num = parseInt(numStr, 10);
+      if (isNaN(num) || num < 0 || num > 100) {
+        await this.bot?.sendMessage(chatId, '❌ Ngưỡng phải là số từ 0 đến 100.\nVí dụ: <code>/thr 60</code>', { parse_mode: 'HTML' });
+        return;
+      }
+
+      try {
+        this.setUserThreshold(chatId, num);
+        await this.bot?.sendMessage(
+          chatId,
+          `✅ Đã đặt ngưỡng thông báo: <b>${num}%</b>\nBạn sẽ chỉ nhận thông báo khi Ensemble Score ≥ ${num}%.`,
+          { parse_mode: 'HTML' },
+        );
+        this.logger.log(`✅ /thr: ${msg.chat.first_name} (${chatId}) đặt ngưỡng = ${num}%`);
+      } catch (error) {
+        this.logger.error(`❌ /thr lỗi: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
     // Handle /menu command
     this.bot.onText(/^\/menu$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
-      const message = `📋 <b>DANH SÁCH LỆNH</b>
-
-` +
-        `🟢 /start — Đăng ký nhận alert tự động từ Trump
-` +
-        `💰 /btc — Xem giá BTC hiện tại
-` +
-        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50%
-` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất
-` +
-        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản
-` +
+      const user = this.users.find(u => u.chatId === chatId);
+      const currentThr = user?.threshold ?? this.globalThreshold;
+      const message = `📋 <b>DANH SÁCH LỆNH</b>\n\n` +
+        `🟢 /start — Đăng ký nhận alert tự động từ Trump\n` +
+        `💰 /btc — Xem giá BTC hiện tại\n` +
+        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50%\n` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất\n` +
+        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
     });
@@ -241,6 +286,18 @@ export class TelegramService implements OnModuleInit {
   }
 
   /**
+   * Cập nhật ngưỡng thông báo của một user.
+   */
+  private setUserThreshold(chatId: string, threshold: number): void {
+    const user = this.users.find(u => u.chatId === chatId);
+    if (!user) throw new Error('User chưa đăng ký. Gửi /start trước.');
+    user.threshold = threshold;
+    const config: UserConfig = { users: this.users };
+    fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
+    this.logger.log(`✅ setUserThreshold: ${chatId} → ${threshold}%`);
+  }
+
+  /**
    * Thêm user mới vào danh sách nếu chưa tồn tại.
    * @param chatId Telegram Chat ID (string)
    * @param name Tên user
@@ -313,8 +370,16 @@ export class TelegramService implements OnModuleInit {
       this.logger.error(`Không thể ghi alert vào file: ${err.message}`);
     }
 
-    // Gửi đến từng user trong danh sách
+    // Gửi đến từng user trong danh sách (kiểm tra ngưỡng riêng của từng user)
+    const ensembleProb = analysis.ensembleProbability;
     for (const user of this.users) {
+      const userThreshold = user.threshold ?? this.globalThreshold;
+      if (ensembleProb < userThreshold) {
+        this.logger.debug(
+          `Bỏ qua ${user.name} (${user.chatId}): ensemble ${ensembleProb}% < ngưỡng ${userThreshold}%`,
+        );
+        continue;
+      }
       try {
         await this.bot.sendMessage(user.chatId, message, {
           parse_mode: 'HTML',
@@ -322,7 +387,7 @@ export class TelegramService implements OnModuleInit {
           disable_notification: silent,
         });
         this.logger.log(
-          `Đã gửi alert đến ${user.name} (${user.chatId})${silent ? ' [silent]' : ''}`,
+          `Đã gửi alert đến ${user.name} (${user.chatId}) [thr=${userThreshold}%]${silent ? ' [silent]' : ''}`,
         );
       } catch (error) {
         // Không throw - tiếp tục gửi cho các user khác dù 1 user lỗi
