@@ -579,8 +579,14 @@ export class TelegramService implements OnModuleInit {
     });
 
     // Rút ngắn nội dung nếu quá dài (Telegram giới hạn 4096 ký tự)
-    const preview =
-      post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content;
+    let preview: string;
+    if (post.content) {
+      preview = post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content;
+    } else if (post.mediaUrls?.length) {
+      preview = `[Bài đăng chỉ có ${post.mediaUrls.length} ảnh, không có văn bản]`;
+    } else {
+      preview = '[Không có nội dung]';
+    }
 
     // Breakdown line: model / severity / market
     const severityPct = Math.round((analysis.severityScore ?? 0) * 100);

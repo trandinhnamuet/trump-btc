@@ -73,17 +73,18 @@ export class AnalysisService {
   }
 
   async analyzePost(content: string, mediaUrls?: string[]): Promise<AnalysisResult> {
-    this.logger.log(`Phân tích bài viết (len=${content.length}, images=${mediaUrls?.length ?? 0})`);
+    const safeContent = content ?? '';
+    this.logger.log(`Phân tích bài viết (len=${safeContent.length}, images=${mediaUrls?.length ?? 0})`);
 
     const hasMedia = mediaUrls && mediaUrls.length > 0;
-    const isUrlOnly = this.isUrlOnlyContent(content);
+    const isUrlOnly = this.isUrlOnlyContent(safeContent);
 
-    // Nếu chỉ là URL và không có ảnh → trả về 0% ngay
-    if (isUrlOnly && !hasMedia) {
-      this.logger.warn(`Content chỉ là URL và không có ảnh, bỏ qua Grok và trả về 0%`);
+    // Nếu không có gì để phân tích → trả về 0% ngay
+    if ((!safeContent.trim() && !hasMedia) || (isUrlOnly && !hasMedia)) {
+      this.logger.warn(`Không có nội dung hoặc chỉ là URL, bỏ qua Grok và trả về 0%`);
       const market = await this.marketSignalService.getMarketContext();
       return {
-        summary: 'Bài đăng chỉ chứa đường dẫn (URL/link), không có nội dung văn bản hay hình ảnh để phân tích.',
+        summary: 'Bài đăng không có nội dung văn bản hay hình ảnh để phân tích.',
         btcInfluenceProbability: 0,
         btcDirection: 'neutral',
         reasoning: 'Không thể phân tích tác động BTC vì bài đăng không có nội dung văn bản hay hình ảnh.',
@@ -96,7 +97,7 @@ export class AnalysisService {
     }
 
     // Nếu có ảnh → dùng Grok Vision để mô tả, ghép vào content
-    let analysisContent = isUrlOnly ? '' : content;
+    let analysisContent = isUrlOnly ? '' : safeContent;
     if (hasMedia) {
       try {
         const imageDesc = await this.describeImages(mediaUrls);
@@ -109,11 +110,28 @@ export class AnalysisService {
           this.logger.log(`Grok Vision mô tả ảnh: ${imageDesc.substring(0, 100)}...`);
         }
       } catch (err) {
-        this.logger.warn(`Grok Vision thất bại, tiếp tục với text content: ${err.message}`);
+        this.logger.warn(`Grok Vision thất bại: ${err.message}`);
       }
     }
 
-    // Lấy bối cảnh thị trường song song (không còn SeverityService)
+    // Sau khi xử lý ảnh, nếu vẫn không có nội dung → trả về 0%
+    if (!analysisContent.trim()) {
+      this.logger.warn(`Không có nội dung sau khi xử lý ảnh (Grok Vision thất bại hoặc trả về rỗng), trả về 0%`);
+      const market = await this.marketSignalService.getMarketContext();
+      return {
+        summary: 'Bài đăng chỉ có hình ảnh nhưng không đọc được nội dung ảnh.',
+        btcInfluenceProbability: 0,
+        btcDirection: 'neutral',
+        reasoning: 'Grok Vision không thể đọc nội dung hình ảnh trong bài đăng này.',
+        ensembleProbability: 0,
+        severityScore: 0,
+        marketSignalScore: market.marketSignalScore,
+        hardRule: false,
+        matchedRules: [],
+      };
+    }
+
+
     const market = await this.marketSignalService.getMarketContext();
     const modelResult = await this.callGrok(analysisContent, market);
 
