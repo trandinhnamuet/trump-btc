@@ -98,6 +98,17 @@ export class TelegramService implements OnModuleInit {
         return;
       }
 
+      // Kiểm tra nếu content chỉ là URL
+      const isUrlOnly = /^(RT:\s+)?https?:\/\/\S+(\s+https?:\/\/\S+)*\s*$/.test(content.trim());
+      if (isUrlOnly) {
+        await this.bot?.sendMessage(
+          chatId,
+          '⚠️ Nội dung bạn gửi chỉ là một URL — AI không thể phân tích link, sẽ bịa nội dung.\n\nVui lòng gửi <b>nội dung văn bản</b> của bài viết.',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
       try {
         await this.bot?.sendMessage(chatId, '⏳ Đang phân tích...');
 

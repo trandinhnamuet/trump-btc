@@ -28,8 +28,32 @@ export class AnalysisService {
     this.grokApiKey = apiKey || '';
   }
 
+  /** Kiểm tra xem content có phải là URL thuần hoặc RT+URL không có text thực */
+  private isUrlOnlyContent(content: string): boolean {
+    const stripped = content.trim();
+    // Khớp: URL đơn, RT: URL, hoặc chuỗi chỉ gồm URLs và khoảng trắng
+    return /^(RT:\s+)?https?:\/\/\S+(\s+https?:\/\/\S+)*\s*$/.test(stripped);
+  }
+
   async analyzePost(content: string): Promise<AnalysisResult> {
     this.logger.log(`Phân tích bài viết (len=${content.length})`);
+
+    // Bỏ qua gọi Grok nếu content chỉ là URL — AI sẽ hallucinate
+    if (this.isUrlOnlyContent(content)) {
+      this.logger.warn(`Content chỉ là URL, bỏ qua Grok và trả về 0%`);
+      const market = await this.marketSignalService.getMarketContext();
+      return {
+        summary: 'Bài đăng chỉ chứa đường dẫn (URL/link), không có nội dung văn bản để phân tích.',
+        btcInfluenceProbability: 0,
+        btcDirection: 'neutral',
+        reasoning: 'Không thể phân tích tác động BTC vì bài đăng không có nội dung văn bản — chỉ là một URL/link.',
+        ensembleProbability: 0,
+        severityScore: 0,
+        marketSignalScore: market.marketSignalScore,
+        hardRule: false,
+        matchedRules: [],
+      };
+    }
 
     // Lấy bối cảnh thị trường song song (không còn SeverityService)
     const market = await this.marketSignalService.getMarketContext();
