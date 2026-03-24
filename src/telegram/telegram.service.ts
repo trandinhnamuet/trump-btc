@@ -176,8 +176,7 @@ export class TelegramService implements OnModuleInit {
         `🟢 /start — Đăng ký nhận alert tự động từ Trump\n` +
         `💰 /btc — Xem giá BTC hiện tại\n` +
         `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50%\n` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất\n` +
-        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất\n` +        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -249,6 +248,77 @@ export class TelegramService implements OnModuleInit {
         });
       } catch (error) {
         this.logger.error(`❌ Lỗi /check2: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
+    // Handle /latest command - re-analyze and resend alert for latest post
+    this.bot.onText(/^\/latest$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const posts = this.storageService.getAllPosts();
+        if (posts.length === 0) {
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào trong storage.');
+          return;
+        }
+
+        const latestPost = [...posts].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )[0];
+
+        const postedAt = new Date(latestPost.createdAt).toLocaleString('vi-VN', {
+          timeZone: 'Asia/Ho_Chi_Minh',
+        });
+        await this.bot?.sendMessage(
+          chatId,
+          `⏳ Đang phân tích lại bài mới nhất...\n\n<i>${latestPost.content.substring(0, 150)}</i>\n\n🕐 Đăng lúc: ${postedAt}`,
+          { parse_mode: 'HTML' },
+        );
+
+        const analysis = await this.analysisService.analyzePost(latestPost.content);
+        const btcPrice = await this.btcPriceService.getCurrentPrice();
+
+        // Cập nhật lại phân tích trong storage
+        this.storageService.updatePost(latestPost.id, {
+          summary: analysis.summary,
+          btcInfluenceProbability: analysis.btcInfluenceProbability,
+          ensembleProbability: analysis.ensembleProbability,
+          severityScore: analysis.severityScore,
+          marketSignalScore: analysis.marketSignalScore,
+          hardRule: analysis.hardRule,
+          matchedRules: analysis.matchedRules,
+          btcDirection: analysis.btcDirection,
+          reasoning: analysis.reasoning,
+        });
+
+        const post: TruthSocialPost = {
+          id: latestPost.id,
+          content: latestPost.content,
+          createdAt: latestPost.createdAt,
+          url: latestPost.url,
+        };
+
+        // Gửi alert đến tất cả users (bỏ qua ngưỡng - đây là re-send thủ công)
+        this.loadUsers();
+        const message = this.buildMessage(post, analysis, btcPrice);
+        let sentCount = 0;
+        for (const user of this.users) {
+          try {
+            await this.bot?.sendMessage(user.chatId, message, {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+            });
+            sentCount++;
+          } catch (e) {
+            this.logger.error(`❌ /latest: Không gửi được đến ${user.name}: ${e.message}`);
+          }
+        }
+
+        this.logger.log(
+          `✅ /latest: Phân tích lại ${latestPost.id} → ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}), gửi cho ${sentCount} users`,
+        );
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /latest: ${error.message}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
       }
     });
