@@ -116,6 +116,11 @@ def main():
                 content = strip_html(p.get("content", ""))
                 if not content:
                     continue
+                # Bỏ qua post chỉ là RT+URL hoặc chỉ là URL (không có text thực để phân tích)
+                # Ví dụ: "RT: https://..." hay "https://..." → AI sẽ hallucinate
+                stripped_content = content.strip()
+                if re.match(r'^(RT:\s+)?https?://\S+\s*$', stripped_content):
+                    continue
                 posts.append({
                     "id": str(p.get("id", "")),
                     "content": content,

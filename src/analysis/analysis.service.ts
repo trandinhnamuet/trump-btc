@@ -155,7 +155,7 @@ LU Y: Khong duoc danh gia thap tin crypto truc tiep. EO cua Trump ve Crypto Stra
 
 Tra ve ONLY valid JSON:
 {
-  "summary": "2-3 cau tom tat bang tieng Viet",
+  "summary": "2-3 cau tom tat CHINH XAC NOI DUNG BAI VIET (Trump dang noi/viet/dang gi? Chu de chinh la gi?). KHONG duoc viet ve tac dong BTC o day.",
   "btcInfluenceProbability": <so nguyen 0-100>,
   "btcDirection": <"increase" | "decrease" | "neutral">,
   "reasoning": "Phan tich cu the, giai thich chuoi tac dong tu noi dung -> tam ly -> gia BTC. Toi thieu 4-5 cau. BAT BUOC VIET BANG TIENG VIET."
