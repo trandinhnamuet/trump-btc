@@ -7,6 +7,7 @@ import { AnalysisResult, PostRecord, TruthSocialPost, UserConfig } from '../comm
 import { AnalysisService } from '../analysis/analysis.service';
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { StorageService } from '../storage/storage.service';
+import { TruthSocialService } from '../truth-social/truth-social.service';
 
 /**
  * TelegramService: Gửi thông báo alert đến danh sách users khi Trump đăng bài
@@ -35,6 +36,7 @@ export class TelegramService implements OnModuleInit {
     private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
     private readonly storageService: StorageService,
+    private readonly truthSocialService: TruthSocialService,
   ) {
     this.globalThreshold = parseInt(
       this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '0',
@@ -95,6 +97,33 @@ export class TelegramService implements OnModuleInit {
           chatId,
           'ℹ️ Vui lòng gửi nội dung sau lệnh /test, ví dụ:\n/test Tin tức về USD và tỷ giá hối đoái...',
         );
+        return;
+      }
+
+      // Kiểm tra nếu content là post ID thuần (chỉ số) hoặc Truth Social URL chứa post ID
+      const postIdMatch = content.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
+      if (postIdMatch) {
+        const postId = postIdMatch[1];
+        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài viết <code>${postId}</code> từ Truth Social...`, { parse_mode: 'HTML' });
+        try {
+          const post = await this.truthSocialService.getPostById(postId);
+          if (!post || !post.content) {
+            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài viết <code>${postId}</code> trên Truth Social.`, { parse_mode: 'HTML' });
+            return;
+          }
+          await this.bot?.sendMessage(chatId, `⏳ Đang phân tích...\n\n<i>${post.content.substring(0, 200)}</i>`, { parse_mode: 'HTML' });
+          const analysis = await this.analysisService.analyzePost(post.content);
+          const btcPrice = await this.btcPriceService.getCurrentPrice();
+          const message = this.buildMessage(post, analysis, btcPrice);
+          await this.bot?.sendMessage(chatId, message, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          });
+          this.logger.log(`✅ /test postId ${postId}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`);
+        } catch (error) {
+          this.logger.error(`❌ Lỗi /test postId: ${error.message}`);
+          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài viết: ${error.message}`);
+        }
         return;
       }
 

@@ -3,9 +3,10 @@ import { TelegramService } from './telegram.service';
 import { AnalysisModule } from '../analysis/analysis.module';
 import { BtcPriceModule } from '../btc-price/btc-price.module';
 import { StorageModule } from '../storage/storage.module';
+import { TruthSocialModule } from '../truth-social/truth-social.module';
 
 @Module({
-  imports: [AnalysisModule, BtcPriceModule, StorageModule],
+  imports: [AnalysisModule, BtcPriceModule, StorageModule, TruthSocialModule],
   providers: [TelegramService],
   exports: [TelegramService],
 })

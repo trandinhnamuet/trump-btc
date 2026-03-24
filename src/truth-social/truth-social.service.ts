@@ -13,6 +13,18 @@ export class TruthSocialService {
     this.logger.log("Fetch script: " + this.FETCH_SCRIPT);
   }
 
+  /** Fetch một post cụ thể theo ID từ Truth Social */
+  async getPostById(postId: string): Promise<TruthSocialPost | null> {
+    this.logger.debug("Fetching single post: " + postId);
+    try {
+      const posts = await this.runPythonFetch(null, postId);
+      return posts.length > 0 ? posts[0] : null;
+    } catch (error) {
+      this.logger.error("Truth Social fetchById error: " + error.message);
+      return null;
+    }
+  }
+
   async getLatestPosts(sinceId?: string | null): Promise<TruthSocialPost[]> {
     if (sinceId) {
       this.logger.debug("Fetching since " + sinceId);
@@ -35,10 +47,14 @@ export class TruthSocialService {
     }
   }
 
-  private runPythonFetch(sinceId?: string | null): Promise<TruthSocialPost[]> {
+  private runPythonFetch(sinceId?: string | null, singleId?: string): Promise<TruthSocialPost[]> {
     return new Promise((resolve, reject) => {
       const args = [this.FETCH_SCRIPT];
-      if (sinceId) args.push(sinceId);
+      if (singleId) {
+        args.push('--single', singleId);
+      } else if (sinceId) {
+        args.push(sinceId);
+      }
       const proc = spawn("python3", args, { timeout: 30000, env: { ...process.env } });
       let stdout = "";
       let stderr = "";
@@ -53,14 +69,16 @@ export class TruthSocialService {
         try {
           const data = JSON.parse(stdout.trim());
           if (data.error) { reject(new Error(data.error)); return; }
-          resolve((data as TruthSocialPost[]).reverse());
+          // single mode trả về theo thứ tự đúng, không cần reverse
+          const posts = data as TruthSocialPost[];
+          resolve(singleId ? posts : posts.reverse());
         } catch {
           reject(new Error("JSON parse error: " + stdout.slice(0, 200)));
         }
       });
       proc.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "ENOENT") {
-          this.runPythonFetchWithCmd("python", sinceId).then(resolve).catch(reject);
+          this.runPythonFetchWithCmd("python", sinceId, singleId).then(resolve).catch(reject);
         } else {
           reject(err);
         }
@@ -68,10 +86,14 @@ export class TruthSocialService {
     });
   }
 
-  private runPythonFetchWithCmd(cmd: string, sinceId?: string | null): Promise<TruthSocialPost[]> {
+  private runPythonFetchWithCmd(cmd: string, sinceId?: string | null, singleId?: string): Promise<TruthSocialPost[]> {
     return new Promise((resolve, reject) => {
       const args = [this.FETCH_SCRIPT];
-      if (sinceId) args.push(sinceId);
+      if (singleId) {
+        args.push('--single', singleId);
+      } else if (sinceId) {
+        args.push(sinceId);
+      }
       const proc = spawn(cmd, args, { timeout: 30000, env: { ...process.env } });
       let stdout = "";
       let stderr = "";

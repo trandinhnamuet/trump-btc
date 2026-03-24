@@ -90,8 +90,64 @@ def fetch_with_session(since_id, profile, token):
     return r
 
 
+def fetch_single_post(post_id, profile, token):
+    """Fetch a single post by status ID."""
+    with Session(impersonate=profile["impersonate"]) as sess:
+        try:
+            sess.get(
+                BASE + "/@realDonaldTrump",
+                headers={"User-Agent": profile["ua"], "Accept": "text/html"},
+                timeout=15,
+            )
+            time.sleep(random.uniform(0.5, 1.5))
+        except Exception:
+            pass
+
+        r = sess.get(
+            BASE + "/api/v1/statuses/" + post_id,
+            headers=build_headers(profile, token),
+            timeout=25,
+        )
+    return r
+
+
 def main():
     argv1 = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    # Mode: --single <id> → fetch một post cụ thể theo ID
+    if argv1 == "--single" and len(sys.argv) > 2:
+        post_id = sys.argv[2]
+        token = os.environ.get("TRUTH_SOCIAL_ACCESS_TOKEN")
+        last_error = None
+        for i, profile in enumerate(PROFILES):
+            try:
+                r = fetch_single_post(post_id, profile, token)
+                if r.status_code in (429, 403):
+                    last_error = f"HTTP {r.status_code}: " + r.text[:200]
+                    if i < len(PROFILES) - 1:
+                        time.sleep(random.uniform(3.0, 6.0))
+                    continue
+                if r.status_code != 200:
+                    last_error = f"HTTP {r.status_code}: " + r.text[:200]
+                    continue
+                p = r.json()
+                content = strip_html(p.get("content", ""))
+                result = [{
+                    "id": str(p.get("id", "")),
+                    "content": content,
+                    "createdAt": p.get("created_at", ""),
+                    "url": p.get("url") or BASE + "/@realDonaldTrump/" + str(p.get("id", "")),
+                }]
+                print(json.dumps(result))
+                return
+            except Exception as e:
+                last_error = str(e)
+                if i < len(PROFILES) - 1:
+                    time.sleep(random.uniform(2.0, 4.0))
+        print(json.dumps({"error": last_error or "All profiles failed"}), file=sys.stderr)
+        sys.exit(1)
+        return
+
     since_id = argv1 if argv1 not in ("", "null", "undefined") else None
     token = os.environ.get("TRUTH_SOCIAL_ACCESS_TOKEN")
 
