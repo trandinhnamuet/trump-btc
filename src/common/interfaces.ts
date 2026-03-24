@@ -8,6 +8,7 @@ export interface TruthSocialPost {
   content: string; // Nội dung đã strip HTML
   createdAt: string; // ISO timestamp
   url: string;
+  mediaUrls?: string[]; // URL ảnh đính kèm (nếu có)
 }
 
 /** Kết quả phân tích từ OpenAI */
@@ -64,6 +65,8 @@ export interface PostRecord {
   btcPriceAt1h?: number | null; // Giá 1h sau
   btcPriceAt1d?: number | null; // Giá 1 ngày sau
   btcPriceAt7d?: number | null; // Giá 7 ngày sau
+
+  mediaUrls?: string[]; // URL ảnh đính kèm (được lưu lại để tái phân tích)
 
   // Thời điểm cần check giá BTC (ISO timestamp)
   checkAt1h?: string;

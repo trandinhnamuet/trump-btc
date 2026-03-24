@@ -107,12 +107,15 @@ export class TelegramService implements OnModuleInit {
         await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài viết <code>${postId}</code> từ Truth Social...`, { parse_mode: 'HTML' });
         try {
           const post = await this.truthSocialService.getPostById(postId);
-          if (!post || !post.content) {
+          if (!post || (!post.content && (!post.mediaUrls || !post.mediaUrls.length))) {
             await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài viết <code>${postId}</code> trên Truth Social.`, { parse_mode: 'HTML' });
             return;
           }
-          await this.bot?.sendMessage(chatId, `⏳ Đang phân tích...\n\n<i>${post.content.substring(0, 200)}</i>`, { parse_mode: 'HTML' });
-          const analysis = await this.analysisService.analyzePost(post.content);
+          const previewText = post.content
+            ? post.content.substring(0, 200)
+            : `[Ảnh đính kèm: ${post.mediaUrls?.length} ảnh]`;
+          await this.bot?.sendMessage(chatId, `⏳ Đang phân tích...\n\n<i>${previewText}</i>`, { parse_mode: 'HTML' });
+          const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
           const btcPrice = await this.btcPriceService.getCurrentPrice();
           const message = this.buildMessage(post, analysis, btcPrice);
           await this.bot?.sendMessage(chatId, message, {
@@ -315,7 +318,7 @@ export class TelegramService implements OnModuleInit {
           { parse_mode: 'HTML' },
         );
 
-        const analysis = await this.analysisService.analyzePost(latestPost.content);
+        const analysis = await this.analysisService.analyzePost(latestPost.content, latestPost.mediaUrls);
         const btcPrice = await this.btcPriceService.getCurrentPrice();
 
         // Cập nhật lại phân tích trong storage

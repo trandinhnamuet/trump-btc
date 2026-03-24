@@ -89,10 +89,10 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.log(`🔄 Backfill: tìm thấy ${unanalyzed.length} bài chưa được phân tích, đang xử lý lại...`);
     for (const record of unanalyzed) {
-      const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url };
+      const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url, mediaUrls: record.mediaUrls };
       try {
         const btcPrice = record.btcPriceAtPost ?? null;
-        const analysis = await this.analysisService.analyzePost(post.content);
+        const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
         this.storageService.updatePost(post.id, {
           summary: analysis.summary,
           btcInfluenceProbability: analysis.btcInfluenceProbability,
@@ -306,6 +306,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       btcPriceAt1h: null,
       btcPriceAt1d: null,
       btcPriceAt7d: null,
+      mediaUrls: post.mediaUrls,
       // Các mốc kiểm tra giá BTC sau khi bài được đăng
       checkAt1h: new Date(postTime.getTime() + 60 * 60 * 1000).toISOString(), // +1 giờ
       checkAt1d: new Date(postTime.getTime() + 24 * 60 * 60 * 1000).toISOString(), // +1 ngày
@@ -321,7 +322,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
 
     // Bước 3: Phân tích bằng OpenAI
     try {
-      const analysis = await this.analysisService.analyzePost(post.content);
+      const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
 
       // Cập nhật record với kết quả phân tích
       // ⭐ LƯU Ý: Phân tích được LƯU VÀO STORAGE cho TẤT CẢ BÀI, không chỉ những bài > ngưỡng

@@ -31,22 +31,62 @@ export class AnalysisService {
   /** Kiểm tra xem content có phải là URL thuần hoặc RT+URL không có text thực */
   private isUrlOnlyContent(content: string): boolean {
     const stripped = content.trim();
-    // Khớp: URL đơn, RT: URL, hoặc chuỗi chỉ gồm URLs và khoảng trắng
     return /^(RT:\s+)?https?:\/\/\S+(\s+https?:\/\/\S+)*\s*$/.test(stripped);
   }
 
-  async analyzePost(content: string): Promise<AnalysisResult> {
-    this.logger.log(`Phân tích bài viết (len=${content.length})`);
+  /** Mô tả nội dung ảnh bằng Grok Vision */
+  private async describeImages(imageUrls: string[]): Promise<string> {
+    if (!imageUrls.length) return '';
+    this.logger.log(`Đang đọc ${imageUrls.length} ảnh bằng Grok Vision...`);
+    const imageContent = imageUrls.map(url => ({
+      type: 'image_url',
+      image_url: { url },
+    }));
+    const response = await axios.post(
+      this.grokApiUrl,
+      {
+        messages: [{
+          role: 'user',
+          content: [
+            ...imageContent,
+            {
+              type: 'text',
+              text: 'Hãy mô tả chi tiết nội dung ảnh/các ảnh này bằng tiếng Việt. Bao gồm: đây là ảnh gì, có chứa văn bản không (nếu có hãy đọc toàn bộ), người trong ảnh là ai, bối cảnh/chủ đề của ảnh là gì.',
+            },
+          ],
+        }],
+        model: 'grok-2-vision-latest',
+        temperature: 0.1,
+        max_tokens: 600,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.grokApiKey}`,
+        },
+      },
+    ).catch(err => {
+      this.logger.error('Grok Vision error:', err.message);
+      throw err;
+    });
+    return response.data?.choices?.[0]?.message?.content ?? '';
+  }
 
-    // Bỏ qua gọi Grok nếu content chỉ là URL — AI sẽ hallucinate
-    if (this.isUrlOnlyContent(content)) {
-      this.logger.warn(`Content chỉ là URL, bỏ qua Grok và trả về 0%`);
+  async analyzePost(content: string, mediaUrls?: string[]): Promise<AnalysisResult> {
+    this.logger.log(`Phân tích bài viết (len=${content.length}, images=${mediaUrls?.length ?? 0})`);
+
+    const hasMedia = mediaUrls && mediaUrls.length > 0;
+    const isUrlOnly = this.isUrlOnlyContent(content);
+
+    // Nếu chỉ là URL và không có ảnh → trả về 0% ngay
+    if (isUrlOnly && !hasMedia) {
+      this.logger.warn(`Content chỉ là URL và không có ảnh, bỏ qua Grok và trả về 0%`);
       const market = await this.marketSignalService.getMarketContext();
       return {
-        summary: 'Bài đăng chỉ chứa đường dẫn (URL/link), không có nội dung văn bản để phân tích.',
+        summary: 'Bài đăng chỉ chứa đường dẫn (URL/link), không có nội dung văn bản hay hình ảnh để phân tích.',
         btcInfluenceProbability: 0,
         btcDirection: 'neutral',
-        reasoning: 'Không thể phân tích tác động BTC vì bài đăng không có nội dung văn bản — chỉ là một URL/link.',
+        reasoning: 'Không thể phân tích tác động BTC vì bài đăng không có nội dung văn bản hay hình ảnh.',
         ensembleProbability: 0,
         severityScore: 0,
         marketSignalScore: market.marketSignalScore,
@@ -55,9 +95,27 @@ export class AnalysisService {
       };
     }
 
+    // Nếu có ảnh → dùng Grok Vision để mô tả, ghép vào content
+    let analysisContent = isUrlOnly ? '' : content;
+    if (hasMedia) {
+      try {
+        const imageDesc = await this.describeImages(mediaUrls);
+        if (imageDesc) {
+          if (analysisContent) {
+            analysisContent += `\n\n[Hình ảnh đính kèm]: ${imageDesc}`;
+          } else {
+            analysisContent = `[Bài đăng chỉ có hình ảnh, không có văn bản. Mô tả ảnh]: ${imageDesc}`;
+          }
+          this.logger.log(`Grok Vision mô tả ảnh: ${imageDesc.substring(0, 100)}...`);
+        }
+      } catch (err) {
+        this.logger.warn(`Grok Vision thất bại, tiếp tục với text content: ${err.message}`);
+      }
+    }
+
     // Lấy bối cảnh thị trường song song (không còn SeverityService)
     const market = await this.marketSignalService.getMarketContext();
-    const modelResult = await this.callGrok(content, market);
+    const modelResult = await this.callGrok(analysisContent, market);
 
     const result: AnalysisResult = {
       ...modelResult,
