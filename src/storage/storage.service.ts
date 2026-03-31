@@ -130,4 +130,26 @@ export class StorageService implements OnModuleInit {
   getAllPosts(): PostRecord[] {
     return this.data.posts;
   }
+
+  /**
+   * Xóa các bài viết trước một ngày cụ thể.
+   * @param beforeDate - Ngày để xóa (dạng ISO string hoặc đối tượng Date)
+   * @returns Số bài viết đã xóa
+   */
+  deletePostsBefore(beforeDate: string | Date): number {
+    const date = typeof beforeDate === 'string' ? new Date(beforeDate) : beforeDate;
+    const initialLength = this.data.posts.length;
+    
+    this.data.posts = this.data.posts.filter((p) => {
+      const postDate = new Date(p.createdAt);
+      return postDate.getTime() >= date.getTime();
+    });
+
+    const deletedCount = initialLength - this.data.posts.length;
+    if (deletedCount > 0) {
+      this.persistData();
+      this.logger.log(`Đã xóa ${deletedCount} bài viết trước ngày ${date.toISOString()}`);
+    }
+    return deletedCount;
+  }
 }

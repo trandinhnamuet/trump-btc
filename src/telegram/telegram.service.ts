@@ -218,8 +218,10 @@ export class TelegramService implements OnModuleInit {
       const message = `📋 <b>DANH SÁCH LỆNH</b>\n\n` +
         `🟢 /start — Đăng ký nhận alert tự động từ Trump\n` +
         `💰 /btc — Xem giá BTC hiện tại\n` +
-        `📊 /check — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50%\n` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất\n` +        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `📊 /check — 7 bài viết mới nhất có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
+        `📊 /check-all — Tất cả bài viết có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -242,21 +244,47 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check command
+    // Handle /check-all command - show all posts with rate >= 30%
+    this.bot.onText(/^\/check-all$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const posts = this.storageService.getAllPosts();
+        const filtered = posts
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        if (filtered.length === 0) {
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30%.');
+          return;
+        }
+
+        const message = this.buildCheckMessage(filtered, 30);
+        await this.bot?.sendMessage(chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        });
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /check-all: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
+    // Handle /check command - show 7 most recent posts with rate >= 30%
     this.bot.onText(/^\/check$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 50)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .slice(0, 7);
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=50%.');
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30%.');
           return;
         }
 
-        const message = this.buildCheckMessage(filtered);
+        const message = this.buildCheckMessage(filtered, 30);
         await this.bot?.sendMessage(chatId, message, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
@@ -267,7 +295,36 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check2 command (last 10 days only)
+    // Handle /clear command - delete posts before a date (format: dd-mm-yyyy)
+    this.bot.onText(/^\/clear\s+(\d{2})-(\d{2})-(\d{4})$/, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const day = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10);
+        const year = parseInt(match[3], 10);
+
+        // Validate date
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+          await this.bot?.sendMessage(chatId, '❌ Ngày không hợp lệ. Định dạng: /clear dd-mm-yyyy');
+          return;
+        }
+
+        // Create date at 00:00:00 UTC
+        const beforeDate = new Date(year, month - 1, day);
+        const deletedCount = this.storageService.deletePostsBefore(beforeDate);
+
+        await this.bot?.sendMessage(
+          chatId,
+          `✅ Đã xóa <b>${deletedCount}</b> bài viết trước ngày ${day.toString().padStart(2, '0')}-${month.toString().padStart(2, '0')}-${year}`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (error) {
+        this.logger.error(`❌ Lỗi /clear: ${error.message}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+      }
+    });
+
+    // Handle /check2 command (last 10 days only, rate >= 30%)
     this.bot.onText(/^\/check2$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
@@ -276,15 +333,15 @@ export class TelegramService implements OnModuleInit {
 
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 50 && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30 && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=50% trong 10 ngày gần nhất.');
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất.');
           return;
         }
 
-        const message = this.buildCheckMessage(filtered);
+        const message = this.buildCheckMessage(filtered, 30);
         await this.bot?.sendMessage(chatId, message, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
@@ -620,9 +677,9 @@ ${breakdownLine}${hardRuleLine}
 
   /**
    * Xây dựng tin nhắn bảng tổng hợp cho /check command.
-   * Hiển thị các bài >=50% kèm 4 cột giá BTC.
+   * Hiển thị các bài >= threshold kèm link và 4 cột giá BTC.
    */
-  private buildCheckMessage(posts: PostRecord[]): string {
+  private buildCheckMessage(posts: PostRecord[], threshold: number = 30): string {
     const fmtPrice = (p: number | null | undefined): string => {
       if (p == null) return '⏳';
       return `$${p.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
@@ -635,8 +692,7 @@ ${breakdownLine}${hardRuleLine}
       return ` (${sign}${pct.toFixed(1)}%)`;
     };
 
-    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;=50% (${posts.length} bài gần nhất)</b>
-`];
+    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;=${threshold}% (${posts.length} bài)</b>\n`];
 
     posts.forEach((p, i) => {
       const dir = p.btcDirection === 'increase' ? '↑' : p.btcDirection === 'decrease' ? '↓' : '─';
@@ -646,8 +702,9 @@ ${breakdownLine}${hardRuleLine}
         hour: '2-digit', minute: '2-digit',
       });
       const base = p.btcPriceAtPost;
+      const link = p.url ? `<a href="${p.url}">🔗 Link</a>` : '';
       lines.push(
-        `<b>${i + 1}. [${date}]</b> <b>${p.btcInfluenceProbability}% ${dir}</b>\n` +
+        `<b>${i + 1}. [${date}]</b> <b>${p.btcInfluenceProbability}% ${dir}</b> ${link}\n` +
         `   📌 ${(p.summary ?? p.content).substring(0, 80)}...\n` +
         `   💰 Lúc đăng: <code>${fmtPrice(base)}</code>\n` +
         `   ⏱ +1h:  <code>${fmtPrice(p.btcPriceAt1h)}${fmtChange(base, p.btcPriceAt1h)}</code>\n` +
