@@ -271,4 +271,16 @@ Tra ve ONLY valid JSON:
     if (s === 'decrease' || s === 'down') return 'decrease';
     return 'neutral';
   }
+
+  /**
+   * Trả về template prompt hiện tại để người dùng xem cấu trúc
+   */
+  public async getPromptTemplate(): Promise<string> {
+    // Lấy dữ liệu thị trường hiện tại làm ví dụ
+    const market = await this.marketSignalService.getMarketContext();
+    
+    // Tạo prompt mẫu với nội dung ví dụ
+    const exampleContent = '[Ví dụ: Nội dung bài viết từ Trump trên Truth Social]';
+    return this.buildPrompt(exampleContent, market);
+  }
 }

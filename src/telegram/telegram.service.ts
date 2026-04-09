@@ -231,7 +231,10 @@ export class TelegramService implements OnModuleInit {
         `💰 /btc — Xem giá BTC hiện tại\n` +
         `📊 /check — 7 bài viết mới nhất có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
         `📊 /check-all — Tất cả bài viết có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +
+        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
+        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
@@ -438,6 +441,48 @@ export class TelegramService implements OnModuleInit {
         const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(`❌ Lỗi /latest: ${errMsg}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
+    // Handle /prompt command - show current AI prompt template
+    this.bot.onText(/^\/prompt$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang lấy mẫu prompt hiện tại...');
+        const promptTemplate = await this.analysisService.getPromptTemplate();
+        
+        // Split prompt thành nhiều pesan vì giới hạn độ dài Telegram
+        const maxLength = 4000;
+        const parts: string[] = [];
+        
+        let currentPart = '';
+        const lines = promptTemplate.split('\n');
+        for (const line of lines) {
+          if (currentPart.length + line.length + 1 > maxLength) {
+            if (currentPart) parts.push(currentPart);
+            currentPart = line + '\n';
+          } else {
+            currentPart += line + '\n';
+          }
+        }
+        if (currentPart) parts.push(currentPart);
+
+        // Gửi từng phần
+        for (let i = 0; i < parts.length; i++) {
+          const header = i === 0 ? '📋 <b>MẪU PROMPT AI HIỆN TẠI:</b>\n\n' : '';
+          const footer = i === parts.length - 1 ? '\n\n✅ Hết prompt template' : '';
+          await this.bot?.sendMessage(
+            chatId,
+            `${header}<code>${this.escapeHtml(parts[i])}</code>${footer}`,
+            { parse_mode: 'HTML' }
+          );
+        }
+        
+        this.logger.log(`✅ /prompt: Gửi template cho user ${msg.chat.first_name}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /prompt: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi lấy prompt: ${errMsg}`);
       }
     });
 
@@ -850,5 +895,19 @@ ${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
 ${breakdownLine}${hardRuleLine}
 
 💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}`;
+  }
+
+  /**
+   * Escape HTML entities để tránh lỗi khi hiển thị trong HTML parse mode
+   */
+  private escapeHtml(text: string): string {
+    const map: { [key: string]: string } = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;',
+    };
+    return text.replace(/[&<>"']/g, (char) => map[char]);
   }
 }
