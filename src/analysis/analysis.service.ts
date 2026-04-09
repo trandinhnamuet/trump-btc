@@ -273,6 +273,67 @@ Tra ve ONLY valid JSON:
   }
 
   /**
+   * Lấy thông tin credit/balance còn lại từ Grok/OpenAI billing endpoints.
+   * Trả về một chuỗi mô tả hoặc ném lỗi nếu không thể lấy.
+   */
+  public async getRemainingCredits(): Promise<string> {
+    if (!this.grokApiKey) {
+      return 'GROK_API_KEY chưa được cấu hình.';
+    }
+
+    const candidates = [
+      'https://api.x.ai/v1/billing/credits',
+      'https://api.x.ai/v1/dashboard/billing/credit_grants',
+      'https://api.x.ai/v1/credits',
+      'https://api.openai.com/v1/dashboard/billing/credit_grants',
+    ];
+
+    for (const url of candidates) {
+      try {
+        const resp = await axios.get(url, {
+          headers: { Authorization: `Bearer ${this.grokApiKey}` },
+          timeout: 5000,
+        });
+        const d = resp.data;
+        if (!d) continue;
+
+        // OpenAI-like shape: total_granted, total_used
+        if (typeof d.total_granted !== 'undefined' || typeof d.total_used !== 'undefined') {
+          const granted = Number(d.total_granted ?? d.total_available ?? 0);
+          const used = Number(d.total_used ?? d.total_usage ?? 0);
+          const remaining = Math.max(0, granted - used);
+          return `Còn lại: ${remaining} (đã cấp: ${granted}, đã dùng: ${used}) — nguồn: ${url}`;
+        }
+
+        // Simple balance/credits fields
+        if (typeof d.balance !== 'undefined') {
+          return `Còn lại: ${d.balance} — nguồn: ${url}`;
+        }
+        if (typeof d.credits !== 'undefined') {
+          return `Còn lại: ${d.credits} — nguồn: ${url}`;
+        }
+
+        // If data is string or simple object, return truncated JSON
+        if (typeof d === 'string') {
+          return `Kết quả: ${d} — nguồn: ${url}`;
+        }
+        // Fallback: stringify object
+        try {
+          const pretty = JSON.stringify(d, null, 2);
+          return `Kết quả: ${pretty.substring(0, 1000)} — nguồn: ${url}`;
+        } catch {
+          return `Không thể đọc response từ ${url}`;
+        }
+      } catch (err) {
+        // Continue to next candidate
+        continue;
+      }
+    }
+
+    throw new Error('Không thể lấy thông tin credit từ Grok/OpenAI (endpoint không hỗ trợ hoặc key không hợp lệ).');
+  }
+
+  /**
    * Trả về template prompt hiện tại để người dùng xem cấu trúc
    */
   public async getPromptTemplate(): Promise<string> {

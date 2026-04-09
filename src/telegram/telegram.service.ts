@@ -471,6 +471,21 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // Handle /credit command - show remaining Grok credits
+    this.bot.onText(/^\/credit$/, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra credit Grok...');
+        const info = await this.analysisService.getRemainingCredits();
+        await this.bot?.sendMessage(chatId, `💳 <b>Grok credit:</b>\n${this.escapeHtml(String(info))}`, { parse_mode: 'HTML' });
+        this.logger.log(`✅ /credit: responded to ${msg.chat.first_name || chatId}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /credit: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi lấy credit: ${errMsg}`);
+      }
+    });
+
     // Suppress noisy polling errors (e.g. 404 when token is a placeholder)
     // Without this handler the error event crashes the process.
     (this.bot as any).on('polling_error', (err: Error) => {
