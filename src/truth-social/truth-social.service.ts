@@ -20,7 +20,8 @@ export class TruthSocialService {
       const posts = await this.runPythonFetch(null, postId);
       return posts.length > 0 ? posts[0] : null;
     } catch (error) {
-      this.logger.error("Truth Social fetchById error: " + error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error("Truth Social fetchById error: " + errMsg);
       return null;
     }
   }
@@ -38,10 +39,11 @@ export class TruthSocialService {
       }
       return posts;
     } catch (error) {
-      this.logger.error("Truth Social fetch error: " + error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error("Truth Social fetch error: " + errMsg);
       // Re-throw rate-limit errors so PollingService backoff logic can fire
-      if (error.message && (error.message.includes('HTTP 403') || error.message.includes('HTTP 429'))) {
-        throw error;
+      if (errMsg.includes('HTTP 403') || errMsg.includes('HTTP 429')) {
+        throw new Error(errMsg);
       }
       return [];
     }

@@ -169,8 +169,9 @@ async function backfillAnalysis() {
         console.log(`✅ Xác suất: ${percentageDisplay}\n`);
         successCount++;
       } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
         console.error(
-          `❌ Lỗi phân tích bài ${post.id}: ${error.message}\n`
+          `❌ Lỗi phân tích bài ${post.id}: ${errMsg}\n`
         );
         errorCount++;
       }
@@ -188,7 +189,8 @@ async function backfillAnalysis() {
 
     process.exit(errorCount > 0 ? 1 : 0);
   } catch (error) {
-    console.error('❌ Lỗi:', error.message);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('❌ Lỗi:', errMsg);
     process.exit(1);
   }
 }

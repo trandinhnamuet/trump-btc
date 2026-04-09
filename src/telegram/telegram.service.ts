@@ -87,8 +87,9 @@ export class TelegramService implements OnModuleInit {
           this.logger.log(`ℹ️ User /start: ${userName} (${chatId}) đã tồn tại`);
         }
       } catch (error) {
-        this.logger.error(`❌ Lỗi xử lý /start: ${error.message}`);
-        this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi xử lý /start: ${errMsg}`);
+        this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -131,8 +132,9 @@ export class TelegramService implements OnModuleInit {
           });
           this.logger.log(`✅ /test postId ${postId}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`);
         } catch (error) {
-          this.logger.error(`❌ Lỗi /test postId: ${error.message}`);
-          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài viết: ${error.message}`);
+          const errMsg = error instanceof Error ? error.message : String(error);
+          this.logger.error(`❌ Lỗi /test postId: ${errMsg}`);
+          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài viết: ${errMsg}`);
         }
         return;
       }
@@ -168,10 +170,11 @@ export class TelegramService implements OnModuleInit {
           `✅ Phân tích /test từ user ${msg.chat.first_name}: xác suất = ${analysis.btcInfluenceProbability}%`,
         );
       } catch (error) {
-        this.logger.error(`❌ Lỗi xử lý /test: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi xử lý /test: ${errMsg}`);
         await this.bot?.sendMessage(
           chatId,
-          `❌ Lỗi phân tích: ${error.message}`,
+          `❌ Lỗi phân tích: ${errMsg}`,
         );
       }
     });
@@ -212,8 +215,9 @@ export class TelegramService implements OnModuleInit {
         );
         this.logger.log(`✅ /thr: ${msg.chat.first_name} (${chatId}) đặt ngưỡng = ${num}%`);
       } catch (error) {
-        this.logger.error(`❌ /thr lỗi: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ /thr lỗi: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -246,8 +250,9 @@ export class TelegramService implements OnModuleInit {
           : '❌ Không lấy được giá BTC lúc này, vui lòng thử lại sau.';
         await this.bot?.sendMessage(chatId, text, { parse_mode: 'HTML' });
       } catch (error) {
-        this.logger.error(`❌ Lỗi /btc: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /btc: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -271,8 +276,9 @@ export class TelegramService implements OnModuleInit {
           disable_web_page_preview: true,
         });
       } catch (error) {
-        this.logger.error(`❌ Lỗi /check-all: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /check-all: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -297,8 +303,9 @@ export class TelegramService implements OnModuleInit {
           disable_web_page_preview: true,
         });
       } catch (error) {
-        this.logger.error(`❌ Lỗi /check: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /check: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -326,8 +333,9 @@ export class TelegramService implements OnModuleInit {
           { parse_mode: 'HTML' }
         );
       } catch (error) {
-        this.logger.error(`❌ Lỗi /clear: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /clear: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -354,8 +362,9 @@ export class TelegramService implements OnModuleInit {
           disable_web_page_preview: true,
         });
       } catch (error) {
-        this.logger.error(`❌ Lỗi /check2: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /check2: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -417,7 +426,8 @@ export class TelegramService implements OnModuleInit {
             });
             sentCount++;
           } catch (e) {
-            this.logger.error(`❌ /latest: Không gửi được đến ${user.name}: ${e.message}`);
+            const errMsg = e instanceof Error ? e.message : String(e);
+            this.logger.error(`❌ /latest: Không gửi được đến ${user.name}: ${errMsg}`);
           }
         }
 
@@ -425,8 +435,9 @@ export class TelegramService implements OnModuleInit {
           `✅ /latest: Phân tích lại ${latestPost.id} → ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}), gửi cho ${sentCount} users`,
         );
       } catch (error) {
-        this.logger.error(`❌ Lỗi /latest: ${error.message}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${error.message}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /latest: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -481,7 +492,8 @@ export class TelegramService implements OnModuleInit {
       await this.bot.startPolling();
       this.logger.log(`🔄 Telegram polling đã được khởi động lại (${reason})`);
     } catch (e) {
-      this.logger.error(`❌ Không thể restart Telegram polling: ${e.message}`);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      this.logger.error(`❌ Không thể restart Telegram polling: ${errMsg}`);
     }
   }
 
@@ -497,7 +509,8 @@ export class TelegramService implements OnModuleInit {
       this.users = config.users || [];
       this.logger.log(`Đã load ${this.users.length} Telegram users`);
     } catch (error) {
-      this.logger.error('Lỗi đọc file users.json:', error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error('Lỗi đọc file users.json: ' + errMsg);
     }
   }
 
@@ -544,7 +557,8 @@ export class TelegramService implements OnModuleInit {
       this.logger.log(`✅ Đã thêm user mới: ${name} (${chatId})`);
       return true;
     } catch (error) {
-      this.logger.error(`Lỗi thêm user: ${error.message}`);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Lỗi thêm user: ${errMsg}`);
       throw error;
     }
   }
@@ -583,7 +597,8 @@ export class TelegramService implements OnModuleInit {
       this.saveAlertToFile(post, analysis, btcPrice, message);
       this.logger.debug(`Đã ghi alert vào file ${this.alertsFile}`);
     } catch (err) {
-      this.logger.error(`Không thể ghi alert vào file: ${err.message}`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Không thể ghi alert vào file: ${errMsg}`);
     }
 
     // Gửi đến từng user trong danh sách (kiểm tra ngưỡng riêng của từng user)
@@ -607,8 +622,9 @@ export class TelegramService implements OnModuleInit {
         );
       } catch (error) {
         // Không throw - tiếp tục gửi cho các user khác dù 1 user lỗi
+        const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(
-          `Không thể gửi đến ${user.name} (${user.chatId}): ${error.message}`,
+          `Không thể gửi đến ${user.name} (${user.chatId}): ${errMsg}`,
         );
       }
     }

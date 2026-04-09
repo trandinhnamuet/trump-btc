@@ -42,7 +42,8 @@ export class StorageService implements OnModuleInit {
           `Đã tải ${this.data.posts.length} bài viết từ storage (lastPostId: ${this.data.lastPostId})`,
         );
       } catch (err) {
-        this.logger.error('Lỗi đọc file posts.json, khởi tạo lại:', err.message);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error('Lỗi đọc file posts.json, khởi tạo lại: ' + errMsg);
         this.data = { lastPostId: null, posts: [] };
         this.persistData();
       }

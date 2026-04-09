@@ -43,7 +43,8 @@ export class BtcPriceService {
       this.logger.debug(`Giá BTC từ Binance: $${price.toLocaleString()}`);
       return price;
     } catch (error) {
-      this.logger.warn('Lỗi Binance API:', error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.warn('Lỗi Binance API: ' + errMsg);
       return null;
     }
   }
@@ -58,7 +59,8 @@ export class BtcPriceService {
       this.logger.debug(`Giá BTC từ CoinGecko: $${price.toLocaleString()}`);
       return price;
     } catch (error) {
-      this.logger.error('Lỗi CoinGecko API:', error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error('Lỗi CoinGecko API: ' + errMsg);
       return null;
     }
   }

@@ -123,7 +123,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         );
         this.storageService.updatePost(post.id, { alerted: true });
       } catch (err) {
-        this.logger.error(`Backfill lỗi bài ${post.id}:`, err.message);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Backfill lỗi bài ${post.id}: ${errMsg}`);
       }
     }
     this.logger.log('🔄 Backfill hoàn tất.');
@@ -176,7 +177,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         await this.processPost(post);
       }
     } catch (error) {
-      const msg: string = (error && error.message) ? error.message : String(error);
+      const msg: string = error instanceof Error && error.message ? error.message : String(error);
       if (msg.includes('HTTP 403')) {
         // Exponential backoff: 5 min → 10 min → 20 min … cap 1 hour
         this.consecutive403++;
@@ -267,7 +268,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         }
       }
     } catch (error) {
-      this.logger.error('Lỗi khi cập nhật giá BTC:', error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error('Lỗi khi cập nhật giá BTC: ' + errMsg);
     } finally {
       this.isCheckingPrices = false;
     }
@@ -354,7 +356,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       this.storageService.updatePost(post.id, { alerted: true });
     } catch (error) {
       // Nếu OpenAI lỗi, vẫn tiếp tục (đã lưu basic data, sẽ thiếu analysis)
-      this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}:`, error.message);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}: ${errMsg}`);
     }
 
     this.logger.log(`✅ Đã xử lý xong bài ${post.id}`);

@@ -66,7 +66,8 @@ export class AnalysisService {
         },
       },
     ).catch(err => {
-      this.logger.error('Grok Vision error:', err.message);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error('Grok Vision error: ' + errMsg);
       throw err;
     });
     return response.data?.choices?.[0]?.message?.content ?? '';
@@ -110,7 +111,8 @@ export class AnalysisService {
           this.logger.log(`Grok Vision mô tả ảnh: ${imageDesc.substring(0, 100)}...`);
         }
       } catch (err) {
-        this.logger.warn(`Grok Vision thất bại: ${err.message}`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Grok Vision thất bại: ${errMsg}`);
       }
     }
 
@@ -182,7 +184,8 @@ export class AnalysisService {
         },
       },
     ).catch((err) => {
-      this.logger.error('Grok API error:', err.message);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.logger.error('Grok API error: ' + errMsg);
       throw err;
     });
 
