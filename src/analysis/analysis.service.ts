@@ -283,4 +283,13 @@ Tra ve ONLY valid JSON:
     const exampleContent = '[Ví dụ: Nội dung bài viết từ Trump trên Truth Social]';
     return this.buildPrompt(exampleContent, market);
   }
+
+  /**
+   * Trả về prompt cho nội dung bài viết cụ thể
+   * (sử dụng dữ liệu thị trường hiện tại)
+   */
+  public async buildPromptForContent(content: string): Promise<string> {
+    const market = await this.marketSignalService.getMarketContext();
+    return this.buildPrompt(content, market);
+  }
 }

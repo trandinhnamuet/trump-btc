@@ -235,7 +235,8 @@ export class TelegramService implements OnModuleInit {
         `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
         `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
-        `🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
+        `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
+        `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -444,41 +445,25 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /prompt command - show current AI prompt template
-    this.bot.onText(/^\/prompt$/, async (msg: any) => {
+    // Handle /prompt command - show AI prompt template (with optional content)
+    // Usage: /prompt            (show template with example content)
+    //        /prompt <content>  (show prompt with specific post content)
+    this.bot.onText(/^\/prompt(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
-      try {
-        await this.bot?.sendMessage(chatId, '⏳ Đang lấy mẫu prompt hiện tại...');
-        const promptTemplate = await this.analysisService.getPromptTemplate();
-        
-        // Split prompt thành nhiều pesan vì giới hạn độ dài Telegram
-        const maxLength = 4000;
-        const parts: string[] = [];
-        
-        let currentPart = '';
-        const lines = promptTemplate.split('\n');
-        for (const line of lines) {
-          if (currentPart.length + line.length + 1 > maxLength) {
-            if (currentPart) parts.push(currentPart);
-            currentPart = line + '\n';
-          } else {
-            currentPart += line + '\n';
-          }
-        }
-        if (currentPart) parts.push(currentPart);
+      const content = match?.[1]?.trim();
 
-        // Gửi từng phần
-        for (let i = 0; i < parts.length; i++) {
-          const header = i === 0 ? '📋 <b>MẪU PROMPT AI HIỆN TẠI:</b>\n\n' : '';
-          const footer = i === parts.length - 1 ? '\n\n✅ Hết prompt template' : '';
-          await this.bot?.sendMessage(
-            chatId,
-            `${header}<code>${this.escapeHtml(parts[i])}</code>${footer}`,
-            { parse_mode: 'HTML' }
-          );
+      try {
+        if (content) {
+          await this.bot?.sendMessage(chatId, '⏳ Đang tạo prompt cho nội dung bài viết...');
+          const promptWithContent = await this.analysisService.buildPromptForContent(content);
+          this.sendPromptInParts(chatId, promptWithContent, `📋 <b>PROMPT CHO BÀI VIẾT:</b>\n\n${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+          this.logger.log(`✅ /prompt <content>: Gửi prompt cho content (${content.length} chars)`);
+        } else {
+          await this.bot?.sendMessage(chatId, '⏳ Đang lấy mẫu prompt...');
+          const promptTemplate = await this.analysisService.getPromptTemplate();
+          this.sendPromptInParts(chatId, promptTemplate, '📋 <b>MẪU PROMPT AI HIỆN TẠI:</b>\n\n');
+          this.logger.log(`✅ /prompt: Gửi template cho user ${msg.chat.first_name}`);
         }
-        
-        this.logger.log(`✅ /prompt: Gửi template cho user ${msg.chat.first_name}`);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(`❌ Lỗi /prompt: ${errMsg}`);
@@ -909,5 +894,36 @@ ${breakdownLine}${hardRuleLine}
       "'": '&#039;',
     };
     return text.replace(/[&<>"']/g, (char) => map[char]);
+  }
+
+  /**
+   * Gửi prompt thành nhiều phần vì giới hạn độ dài Telegram (4096 ký tự)
+   */
+  private async sendPromptInParts(chatId: string, prompt: string, headerText: string): Promise<void> {
+    const maxLength = 4000;
+    const parts: string[] = [];
+
+    let currentPart = '';
+    const lines = prompt.split('\n');
+    for (const line of lines) {
+      if (currentPart.length + line.length + 1 > maxLength) {
+        if (currentPart) parts.push(currentPart);
+        currentPart = line + '\n';
+      } else {
+        currentPart += line + '\n';
+      }
+    }
+    if (currentPart) parts.push(currentPart);
+
+    // Gửi từng phần
+    for (let i = 0; i < parts.length; i++) {
+      const header = i === 0 ? headerText : '';
+      const footer = i === parts.length - 1 ? '\n\n✅ Hết prompt' : '';
+      await this.bot?.sendMessage(
+        chatId,
+        `${header}<code>${this.escapeHtml(parts[i])}</code>${footer}`,
+        { parse_mode: 'HTML' }
+      );
+    }
   }
 }
