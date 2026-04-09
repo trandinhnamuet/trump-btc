@@ -175,7 +175,7 @@ export class AnalysisService {
         ],
         model: 'grok-3',
         temperature: 0.3,
-        max_tokens: 1000,
+        max_tokens: 600,
       },
       {
         headers: {
@@ -261,7 +261,7 @@ Tra ve ONLY valid JSON:
   "summary": "2-3 cau tom tat CHINH XAC NOI DUNG BAI VIET (Trump dang noi/viet/dang gi? Chu de chinh la gi?). KHONG duoc viet ve tac dong BTC o day.",
   "btcInfluenceProbability": <so nguyen 0-100>,
   "btcDirection": <"increase" | "decrease" | "neutral">,
-  "reasoning": "Phan tich cu the, giai thich chuoi tac dong tu noi dung -> tam ly -> gia BTC. Toi thieu 4-5 cau. BAT BUOC VIET BANG TIENG VIET."
+  "reasoning": "Phan tich ngan gon, toi da 50-75 chu, 1-2 cau. Giai thich tac dong tu noi dung toi BTC. VIET BANG TIENG VIET."
 }`;
   }
 
