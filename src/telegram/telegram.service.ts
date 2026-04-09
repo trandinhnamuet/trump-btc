@@ -725,7 +725,7 @@ export class TelegramService implements OnModuleInit {
 📝 <b>Tóm tắt:</b>
 ${analysis.summary}
 
-💡 <b>Lý do:</b> ${analysis.reasoning}
+💡 <b>Lý do:</b> ${this.truncateReasoning(analysis.reasoning)}
 
 📊 <b>Ensemble Score:</b>
 ${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
@@ -776,6 +776,13 @@ ${breakdownLine}${hardRuleLine}
     });
 
     return lines.join('\n\n');
+  }
+
+  /** Cắt ngắn reasoning xuống 50-75 ký tự */
+  private truncateReasoning(reasoning: string): string {
+    const maxLen = 75;
+    if (reasoning.length <= maxLen) return reasoning;
+    return reasoning.substring(0, 72) + '...';
   }
 
   /** Tạo thanh tiến độ dạng text để hiển thị %, với màu sắc dựa vào hướng ảnh hưởng */
@@ -843,7 +850,7 @@ ${breakdownLine}${hardRuleLine}
 📝 <b>Tóm tắt:</b>
 ${analysis.summary}
 
-💡 <b>Lý do:</b> ${analysis.reasoning}
+💡 <b>Lý do:</b> ${this.truncateReasoning(analysis.reasoning)}
 
 📊 <b>Ensemble Score:</b>
 ${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
