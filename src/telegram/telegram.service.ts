@@ -69,6 +69,10 @@ export class TelegramService implements OnModuleInit {
 
     // polling: true = nhận lệnh từ users, có thể handle /start để lấy Chat ID
     this.bot = new TelegramBot(token, { polling: true });
+    // Check Grok credits once and log result for debugging
+    this.analysisService.getRemainingCredits()
+      .then(info => this.logger.log(`GROK credit check: ${info}`))
+      .catch(err => this.logger.warn(`GROK credit check failed: ${err instanceof Error ? err.message : String(err)}`));
     
     // Handle /start command để tự động add user vào danh sách
     this.bot.onText(/\/start/, async (msg: any) => {
