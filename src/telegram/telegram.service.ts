@@ -237,6 +237,7 @@ export class TelegramService implements OnModuleInit {
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
         `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
+        `💳 /credit — Xem số credit Grok còn lại\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -472,7 +473,7 @@ export class TelegramService implements OnModuleInit {
     });
 
     // Handle /credit command - show remaining Grok credits
-    this.bot.onText(/^\/credit$/, async (msg: any) => {
+    this.bot.onText(/^\/credit(?:@[\w_]+)?(?:\s.*)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
         await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra credit Grok...');
