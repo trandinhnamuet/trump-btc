@@ -281,84 +281,107 @@ Tra ve ONLY valid JSON:
       return 'GROK_API_KEY chưa được cấu hình. Vui lòng thêm vào .env hoặc biến môi trường và khởi động lại ứng dụng.';
     }
 
-    // Các endpoint billing có thể khác nhau hoặc không được public.
-    // Thử một vài endpoint billing trước, nếu không có kết quả thì kiểm tra endpoint models
-    const billingCandidates = [
-      'https://api.x.ai/v1/dashboard/billing/credit_grants',
-      'https://api.openai.com/v1/dashboard/billing/credit_grants',
-      'https://api.x.ai/v1/billing/credits',
-      'https://api.x.ai/v1/credits',
-    ];
+    // Helper để thử các endpoint với một key cụ thể
+    const tryWithKey = async (key: string, label: string): Promise<string | null> => {
+      const billingCandidates = [
+        'https://api.x.ai/v1/dashboard/billing/credit_grants',
+        'https://api.openai.com/v1/dashboard/billing/credit_grants',
+        'https://api.x.ai/v1/billing/credits',
+        'https://api.x.ai/v1/credits',
+      ];
 
-    for (const url of billingCandidates) {
-      try {
-        const resp = await axios.get(url, {
-          headers: { Authorization: `Bearer ${this.grokApiKey}` },
-          timeout: 7000,
-        });
-        const d = resp.data;
-        if (!d) continue;
-
-        // Thử đọc các trường hay gặp
-        if (typeof d.total_granted !== 'undefined' || typeof d.total_used !== 'undefined') {
-          const granted = Number(d.total_granted ?? d.total_available ?? 0);
-          const used = Number(d.total_used ?? d.total_usage ?? 0);
-          const remaining = Math.max(0, granted - used);
-          return `Còn lại: ${remaining} (đã cấp: ${granted}, đã dùng: ${used}) — nguồn: ${url}`;
-        }
-        if (typeof d.balance !== 'undefined') {
-          return `Còn lại: ${d.balance} — nguồn: ${url}`;
-        }
-        if (typeof d.credits !== 'undefined') {
-          return `Còn lại: ${d.credits} — nguồn: ${url}`;
-        }
-
-        // Nếu response khác, trả về một bản tóm tắt ngắn
+      for (const url of billingCandidates) {
         try {
-          const pretty = JSON.stringify(d, null, 2);
-          return `Kết quả (billing endpoint ${url}): ${pretty.substring(0, 1000)}`;
-        } catch {
-          return `Không thể đọc response từ ${url}`;
-        }
-      } catch (err: any) {
-        // Nếu bị 401/403 → key không hợp lệ hoặc bị chặn
-        const status = err?.response?.status;
-        if (status === 401 || status === 403) {
-          return `GROK_API_KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}).`;
-        }
-        // khác thì tiếp tục thử endpoint khác
-        continue;
-      }
-    }
+          const resp = await axios.get(url, {
+            headers: { Authorization: `Bearer ${key}` },
+            timeout: 7000,
+          });
+          const d = resp.data;
+          if (!d) continue;
 
-    // Nếu không lấy được billing, kiểm tra endpoint models để xác nhận key còn hợp lệ
-    const modelCandidates = ['https://api.x.ai/v1/models', 'https://api.openai.com/v1/models'];
-    for (const url of modelCandidates) {
-      try {
-        const resp = await axios.get(url, {
-          headers: { Authorization: `Bearer ${this.grokApiKey}` },
-          timeout: 7000,
-        });
-        if (resp.status === 200 && resp.data) {
-          const data = resp.data.data ?? resp.data.models ?? resp.data;
-          let models: string[] = [];
-          if (Array.isArray(data)) {
-            models = data.slice(0, 5).map((m: any) => m.id ?? m.name ?? String(m));
+          if (typeof d.total_granted !== 'undefined' || typeof d.total_used !== 'undefined') {
+            const granted = Number(d.total_granted ?? d.total_available ?? 0);
+            const used = Number(d.total_used ?? d.total_usage ?? 0);
+            const remaining = Math.max(0, granted - used);
+            return `${label}: Còn lại: ${remaining} (đã cấp: ${granted}, đã dùng: ${used}) — nguồn: ${url}`;
           }
-          const modelList = models.length ? models.join(', ') : JSON.stringify(resp.data).substring(0, 200);
-          return `API key hợp lệ. Models truy cập: ${modelList}. Lưu ý: API không cung cấp thông tin credit công khai qua endpoint billing; kiểm tra dashboard billing để biết chi tiết.`;
+          if (typeof d.balance !== 'undefined') {
+            return `${label}: Còn lại: ${d.balance} — nguồn: ${url}`;
+          }
+          if (typeof d.credits !== 'undefined') {
+            return `${label}: Còn lại: ${d.credits} — nguồn: ${url}`;
+          }
+
+          try {
+            const pretty = JSON.stringify(d, null, 2);
+            return `${label}: Kết quả (billing endpoint ${url}): ${pretty.substring(0, 1000)}`;
+          } catch {
+            return `${label}: Không thể đọc response từ ${url}`;
+          }
+        } catch (err: any) {
+          const status = err?.response?.status;
+          if (status === 401 || status === 403) {
+            // Key không hợp lệ cho endpoint này → báo và tiếp tục thử các key khác
+            return `${label}: KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}) khi gọi ${url}`;
+          }
+          // khác thì thử endpoint tiếp
+          continue;
         }
-      } catch (err: any) {
-        const status = err?.response?.status;
-        if (status === 401 || status === 403) {
-          return `GROK_API_KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}).`;
-        }
-        continue;
       }
+
+      // Kiểm tra models endpoint để xác nhận key có hợp lệ để gọi API hay không
+      const modelCandidates = ['https://api.x.ai/v1/models', 'https://api.openai.com/v1/models'];
+      for (const url of modelCandidates) {
+        try {
+          const resp = await axios.get(url, {
+            headers: { Authorization: `Bearer ${key}` },
+            timeout: 7000,
+          });
+          if (resp.status === 200 && resp.data) {
+            const data = resp.data.data ?? resp.data.models ?? resp.data;
+            let models: string[] = [];
+            if (Array.isArray(data)) {
+              models = data.slice(0, 5).map((m: any) => m.id ?? m.name ?? String(m));
+            }
+            const modelList = models.length ? models.join(', ') : JSON.stringify(resp.data).substring(0, 200);
+            return `${label}: API key hợp lệ. Models truy cập: ${modelList}. Lưu ý: billing có thể không public.`;
+          }
+        } catch (err: any) {
+          const status = err?.response?.status;
+          if (status === 401 || status === 403) {
+            return `${label}: KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}) khi gọi ${url}`;
+          }
+          continue;
+        }
+      }
+
+      return null;
+    };
+
+    // Thử với GROK_API_KEY trước
+    const grokResult = await tryWithKey(this.grokApiKey, 'GROK');
+    if (grokResult && grokResult.startsWith('GROK: KEY không hợp lệ')) {
+      // Nếu grok key không hợp lệ, thử OPENAI_API_KEY nếu có
+      const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
+      if (openaiKey) {
+        const openaiResult = await tryWithKey(openaiKey, 'OPENAI');
+        if (openaiResult) {
+          return `GROK key không hợp lệ. Thông tin từ OPENAI thay thế:\n${openaiResult}`;
+        }
+      }
+      return grokResult.replace('GROK: ', '');
     }
 
-    // Fallback: không lấy được thông tin từ API
-    return 'Không thể lấy thông tin credit từ Grok/OpenAI thông qua API. Có thể endpoint này không public; vui lòng kiểm tra biến môi trường GROK_API_KEY hoặc dashboard nhà cung cấp để biết chi tiết.';
+    if (grokResult) return grokResult;
+
+    // Cuối cùng, nếu GROK không trả kết quả nhưng OPENAI có key, thử OPENAI
+    const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
+    if (openaiKey) {
+      const openaiResult = await tryWithKey(openaiKey, 'OPENAI');
+      if (openaiResult) return openaiResult;
+    }
+
+    return 'Không thể lấy thông tin credit từ Grok/OpenAI thông qua API. Có thể endpoint này không public; vui lòng kiểm tra biến môi trường GROK_API_KEY/OPENAI_API_KEY hoặc dashboard nhà cung cấp để biết chi tiết.';
   }
 
   /**
