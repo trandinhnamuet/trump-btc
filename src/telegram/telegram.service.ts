@@ -23,6 +23,13 @@ export class TelegramService implements OnModuleInit {
   private bot: TelegramBot | null = null;
   private users: UserConfig['users'] = [];
 
+  // Timer để tránh schedule restart polling nhiều lần liên tiếp
+  private pollingRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  // Watchdog: kiểm tra định kỳ polling còn sống không
+  private pollingWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  // Thời điểm cuối polling_error xảy ra
+  private lastPollingErrorAt = 0;
+
   // Đường dẫn file danh sách users
   private readonly usersFile = path.join(process.cwd(), 'data', 'users.json');
   // File log lưu các alert đã gửi (JSON per line)
@@ -432,11 +439,50 @@ export class TelegramService implements OnModuleInit {
         // Stop retrying — token won't fix itself at runtime
         this.bot?.stopPolling();
       } else {
+        this.lastPollingErrorAt = Date.now();
         this.logger.warn(`Telegram polling error: ${msg.split('\n')[0]}`);
+        // Với lỗi mạng (EFATAL, ETIMEDOUT, ECONNRESET...), tự động restart polling sau 5s
+        this.schedulePollingRestart();
       }
     });
 
+    // Watchdog: mỗi 2 phút kiểm tra nếu polling bị dừng thì khởi động lại
+    this.pollingWatchdogTimer = setInterval(() => this.checkAndRestorePolling(), 2 * 60 * 1000);
+
     this.logger.log('Telegram Bot đã khởi tạo thành công (polling mode enabled)');
+  }
+
+  /** Schedule restart polling sau lỗi mạng, tránh restart nhiều lần liên tiếp */
+  private schedulePollingRestart() {
+    if (this.pollingRestartTimer) return; // Đã có timer chờ, không thêm nữa
+    this.pollingRestartTimer = setTimeout(async () => {
+      this.pollingRestartTimer = null;
+      await this.restartPolling('network error recovery');
+    }, 5000);
+  }
+
+  /** Kiểm tra polling còn hoạt động không; nếu tắt thì khởi động lại */
+  private async checkAndRestorePolling() {
+    if (!this.bot) return;
+    const isPolling = (this.bot as any).isPolling?.() ?? false;
+    if (!isPolling) {
+      this.logger.warn('⚠️ Phát hiện Telegram polling đã dừng (watchdog). Đang khởi động lại...');
+      await this.restartPolling('watchdog');
+    }
+  }
+
+  /** Dừng và khởi động lại polling */
+  private async restartPolling(reason: string) {
+    if (!this.bot) return;
+    try {
+      await this.bot.stopPolling();
+    } catch (_) { /* bỏ qua lỗi stop */ }
+    try {
+      await this.bot.startPolling();
+      this.logger.log(`🔄 Telegram polling đã được khởi động lại (${reason})`);
+    } catch (e) {
+      this.logger.error(`❌ Không thể restart Telegram polling: ${e.message}`);
+    }
   }
 
   /** Load danh sách users từ data/users.json */
