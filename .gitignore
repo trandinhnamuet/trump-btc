@@ -55,8 +55,18 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-# Environment variables (ch?a API keys nh?y c?m)
+# Environment variables (chứa API keys nhạy cảm)
 .env
+
+# Server deployment scripts (contain server credentials - keep locally only)
+deploy.py
+ssh-run.py
+restart-server.py
+test-server.py
+deploy-test.py
+run-test-server.py
+test-curl-cffi.py
+test-impersonate.py
 
 # D? li?u b�i vi?t (c� th? l?n, kh�ng c?n commit)
 data/posts.json
