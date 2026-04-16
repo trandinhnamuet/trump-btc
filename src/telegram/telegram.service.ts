@@ -226,7 +226,7 @@ export class TelegramService implements OnModuleInit {
     });
 
     // Handle /menu command
-    this.bot.onText(/^\/menu$/, async (msg: any) => {
+    this.bot.onText(/^\/menu(?:@[\w_]+)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
       const user = this.users.find(u => u.chatId === chatId);
       const currentThr = user?.threshold ?? this.globalThreshold;
@@ -453,7 +453,7 @@ export class TelegramService implements OnModuleInit {
     // Handle /prompt command - show AI prompt template (with optional content)
     // Usage: /prompt            (show template with example content)
     //        /prompt <content>  (show prompt with specific post content)
-    this.bot.onText(/^\/prompt(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
+    this.bot.onText(/^\/prompt(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
       const content = match?.[1]?.trim();
 
