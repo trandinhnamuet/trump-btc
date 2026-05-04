@@ -4,28 +4,43 @@ import axios from 'axios';
 import { AnalysisResult } from '../common/interfaces';
 import { MarketSignalService, MarketContextResult } from '../market-signal/market-signal.service';
 
+/** Thrown when the daily API call limit (100/day) is exceeded. */
+export class DailyLimitExceededException extends Error {
+  constructor(public readonly count: number, public readonly shouldAlert: boolean) {
+    super(`Đã đạt giới hạn 100 API calls/ngày (lần gọi thứ ${count}). Tạm dừng đến 0:00 ngày mai.`);
+    this.name = 'DailyLimitExceededException';
+  }
+}
+
 /**
- * AnalysisService v3 — AI-first, market-aware.
+ * AnalysisService v4 — OpenAI gpt-4o-mini, market-aware, rate-limited.
  *
- * Thay thế approach cũ (ensemble rule-based + AI):
- *   → Grok được cung cấp bối cảnh thị trường đầy đủ (giá, 24h/7d/30d, vị trí so ATH/ATL)
- *   → AI tự suy luận về tâm lý thị trường, macro narrative, thế vị của BTC hiện tại
- *   → Không có rule-based hard override, không có keyword matching
- *   → Reasoning tự do theo từng post — không theo template A/B/C/D
+ * - Model: gpt-4o-mini ($0.15/1M input, $0.60/1M output)
+ * - Vision: multimodal inline (gpt-4o-mini hỗ trợ ảnh — 1 call duy nhất/post)
+ * - Rate limit: tối đa 100 API calls/ngày, reset lúc 0:00 theo giờ server
+ * - Logging: đầy đủ call count, tokens ước lượng, lỗi chi tiết
  */
 @Injectable()
 export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
-  private readonly grokApiKey: string;
-  private readonly grokApiUrl = 'https://api.x.ai/v1/chat/completions';
+  private readonly openaiApiKey: string;
+  private readonly openaiApiUrl = 'https://api.openai.com/v1/chat/completions';
+  private readonly MODEL = 'gpt-4o-mini';
+  private readonly DAILY_LIMIT = 100;
+
+  // Daily rate limit state (in-memory, resets on restart or new calendar day)
+  private dailyCallCount = 0;
+  private dailyCallDate = '';      // YYYY-MM-DD (server local time)
+  private limitAlertSent = false;  // Chỉ gửi cảnh báo Telegram 1 lần/ngày
 
   constructor(
     private readonly configService: ConfigService,
     private readonly marketSignalService: MarketSignalService,
   ) {
-    const apiKey = this.configService.get<string>('GROK_API_KEY');
-    if (!apiKey) this.logger.warn('GROK_API_KEY chưa được cấu hình trong .env!');
-    this.grokApiKey = apiKey || '';
+    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    if (!apiKey) this.logger.warn('OPENAI_API_KEY chưa được cấu hình trong .env!');
+    this.openaiApiKey = apiKey || '';
+    this.logger.log(`[CONFIG] Model: ${this.MODEL} | Daily limit: ${this.DAILY_LIMIT} calls/day`);
   }
 
   /** Kiểm tra xem content có phải là URL thuần hoặc RT+URL không có text thực */
@@ -34,55 +49,69 @@ export class AnalysisService {
     return /^(RT:\s+)?https?:\/\/\S+(\s+https?:\/\/\S+)*\s*$/.test(stripped);
   }
 
-  /** Mô tả nội dung ảnh bằng Grok Vision */
-  private async describeImages(imageUrls: string[]): Promise<string> {
-    if (!imageUrls.length) return '';
-    this.logger.log(`Đang đọc ${imageUrls.length} ảnh bằng Grok Vision...`);
-    const imageContent = imageUrls.map(url => ({
-      type: 'image_url',
-      image_url: { url },
-    }));
-    const response = await axios.post(
-      this.grokApiUrl,
-      {
-        messages: [{
-          role: 'user',
-          content: [
-            ...imageContent,
-            {
-              type: 'text',
-              text: 'Hãy mô tả chi tiết nội dung ảnh/các ảnh này bằng tiếng Việt. Bao gồm: đây là ảnh gì, có chứa văn bản không (nếu có hãy đọc toàn bộ), người trong ảnh là ai, bối cảnh/chủ đề của ảnh là gì.',
-            },
-          ],
-        }],
-        model: 'grok-2-vision-latest',
-        temperature: 0.1,
-        max_tokens: 600,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.grokApiKey}`,
-        },
-      },
-    ).catch(err => {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error('Grok Vision error: ' + errMsg);
-      throw err;
-    });
-    return response.data?.choices?.[0]?.message?.content ?? '';
+  /**
+   * Kiểm tra và tăng bộ đếm daily call. Tự reset khi sang ngày mới.
+   * Throws DailyLimitExceededException nếu đã vượt 100 calls/ngày.
+   */
+  private checkDailyLimit(): void {
+    const today = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD (ISO-like, timezone-safe)
+    if (this.dailyCallDate !== today) {
+      if (this.dailyCallCount > 0) {
+        this.logger.log(
+          `[DAILY RESET] Sang ngày ${today}. Tổng calls ngày qua (${this.dailyCallDate}): ${this.dailyCallCount}/${this.DAILY_LIMIT}`,
+        );
+      }
+      this.dailyCallDate = today;
+      this.dailyCallCount = 0;
+      this.limitAlertSent = false;
+    }
+
+    this.dailyCallCount++;
+
+    // Log ở các mốc cảnh báo
+    if ([50, 75, 90, 95, 100].includes(this.dailyCallCount)) {
+      this.logger.warn(
+        `[RATE LIMIT] ⚠️ Daily API calls: ${this.dailyCallCount}/${this.DAILY_LIMIT} (model=${this.MODEL})`,
+      );
+    } else {
+      this.logger.debug(`[RATE LIMIT] Daily API calls: ${this.dailyCallCount}/${this.DAILY_LIMIT}`);
+    }
+
+    if (this.dailyCallCount > this.DAILY_LIMIT) {
+      const shouldAlert = !this.limitAlertSent;
+      if (shouldAlert) this.limitAlertSent = true;
+      this.logger.error(
+        `[RATE LIMIT] 🚫 Đã vượt giới hạn ${this.DAILY_LIMIT} API calls/ngày! ` +
+        `Call #${this.dailyCallCount} bị chặn. Sẽ reset lúc 0:00.` +
+        (shouldAlert ? ' [TELEGRAM ALERT SẼ ĐƯỢC GỬI]' : ' [alert đã gửi trước đó]'),
+      );
+      throw new DailyLimitExceededException(this.dailyCallCount, shouldAlert);
+    }
+  }
+
+  /** Trả về thống kê daily call để monitoring */
+  getDailyCallStats(): { count: number; limit: number; date: string } {
+    return { count: this.dailyCallCount, limit: this.DAILY_LIMIT, date: this.dailyCallDate };
   }
 
   async analyzePost(content: string, mediaUrls?: string[]): Promise<AnalysisResult> {
     const safeContent = content ?? '';
-    this.logger.log(`Phân tích bài viết (len=${safeContent.length}, images=${mediaUrls?.length ?? 0})`);
+    this.logger.log(
+      `[ANALYZE] Bài viết: len=${safeContent.length} chars, images=${mediaUrls?.length ?? 0} | ` +
+      `daily_calls=${this.dailyCallCount + 1}/${this.DAILY_LIMIT}`,
+    );
+
+    // Kiểm tra rate limit TRƯỚC khi làm bất cứ điều gì (kể cả market data fetch)
+    this.checkDailyLimit();
 
     const hasMedia = mediaUrls && mediaUrls.length > 0;
     const isUrlOnly = this.isUrlOnlyContent(safeContent);
 
-    // Nếu không có gì để phân tích → trả về 0% ngay
+    // Nếu không có gì để phân tích → trả về 0% ngay (không tốn API call)
     if ((!safeContent.trim() && !hasMedia) || (isUrlOnly && !hasMedia)) {
-      this.logger.warn(`Không có nội dung hoặc chỉ là URL, bỏ qua Grok và trả về 0%`);
+      // Hoàn trả lại 1 count vì không thực sự gọi API
+      this.dailyCallCount--;
+      this.logger.warn(`[SKIP] Không có nội dung hoặc chỉ là URL — bỏ qua, không gọi API`);
       const market = await this.marketSignalService.getMarketContext();
       return {
         summary: 'Bài đăng không có nội dung văn bản hay hình ảnh để phân tích.',
@@ -97,45 +126,11 @@ export class AnalysisService {
       };
     }
 
-    // Nếu có ảnh → dùng Grok Vision để mô tả, ghép vào content
-    let analysisContent = isUrlOnly ? '' : safeContent;
-    if (hasMedia) {
-      try {
-        const imageDesc = await this.describeImages(mediaUrls);
-        if (imageDesc) {
-          if (analysisContent) {
-            analysisContent += `\n\n[Hình ảnh đính kèm]: ${imageDesc}`;
-          } else {
-            analysisContent = `[Bài đăng chỉ có hình ảnh, không có văn bản. Mô tả ảnh]: ${imageDesc}`;
-          }
-          this.logger.log(`Grok Vision mô tả ảnh: ${imageDesc.substring(0, 100)}...`);
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`Grok Vision thất bại: ${errMsg}`);
-      }
-    }
-
-    // Sau khi xử lý ảnh, nếu vẫn không có nội dung → trả về 0%
-    if (!analysisContent.trim()) {
-      this.logger.warn(`Không có nội dung sau khi xử lý ảnh (Grok Vision thất bại hoặc trả về rỗng), trả về 0%`);
-      const market = await this.marketSignalService.getMarketContext();
-      return {
-        summary: 'Bài đăng chỉ có hình ảnh nhưng không đọc được nội dung ảnh.',
-        btcInfluenceProbability: 0,
-        btcDirection: 'neutral',
-        reasoning: 'Grok Vision không thể đọc nội dung hình ảnh trong bài đăng này.',
-        ensembleProbability: 0,
-        severityScore: 0,
-        marketSignalScore: market.marketSignalScore,
-        hardRule: false,
-        matchedRules: [],
-      };
-    }
-
-
+    const textContent = isUrlOnly ? '' : safeContent;
     const market = await this.marketSignalService.getMarketContext();
-    const modelResult = await this.callGrok(analysisContent, market);
+
+    // Gọi OpenAI với multimodal (ảnh + text trong 1 request duy nhất)
+    const modelResult = await this.callOpenAI(textContent, mediaUrls, market);
 
     const result: AnalysisResult = {
       ...modelResult,
@@ -147,57 +142,100 @@ export class AnalysisService {
     };
 
     this.logger.log(
-      `Phân tích xong: ${result.btcInfluenceProbability}% (${result.btcDirection}) ` +
-      `| market=${market.trendLabel} | price=$${market.currentPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+      `[DONE] ${result.btcInfluenceProbability}% (${result.btcDirection}) ` +
+      `| market=${market.trendLabel} | price=$${market.currentPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })} ` +
+      `| calls today: ${this.dailyCallCount}/${this.DAILY_LIMIT}`,
     );
 
     return result;
   }
 
-  private async callGrok(
+  /**
+   * Gọi OpenAI gpt-4o-mini. Hỗ trợ multimodal: nếu có ảnh, đưa thẳng vào message
+   * (không cần vision call riêng). 1 API call duy nhất cho cả text lẫn ảnh.
+   */
+  private async callOpenAI(
     content: string,
+    mediaUrls: string[] | undefined,
     market: MarketContextResult,
   ): Promise<Omit<AnalysisResult, 'ensembleProbability' | 'severityScore' | 'marketSignalScore' | 'hardRule' | 'matchedRules'>> {
-    const prompt = this.buildPrompt(content, market);
+    const hasImages = mediaUrls && mediaUrls.length > 0;
+    const prompt = this.buildPrompt(content, market, hasImages);
 
-    const response = await axios.post(
-      this.grokApiUrl,
-      {
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Bạn là chuyên gia phân tích thị trường Bitcoin hàng đầu, am hiểu sâu về cách tin tức, chính trị, và sự kiện vĩ mô tác động đến tâm lý thị trường và giá BTC. ' +
-              'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
-              'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
-          },
-          { role: 'user', content: prompt },
-        ],
-        model: 'grok-3',
-        temperature: 0.3,
-        max_tokens: 600,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.grokApiKey}`,
+    // Xây dựng user message — multimodal nếu có ảnh
+    let userContent: any;
+    if (hasImages) {
+      userContent = [
+        // Đưa ảnh vào đầu message, detail=low để tiết kiệm token
+        ...mediaUrls.map(url => ({ type: 'image_url', image_url: { url, detail: 'low' } })),
+        { type: 'text', text: prompt },
+      ];
+      this.logger.log(`[API] Gọi ${this.MODEL} với ${mediaUrls.length} ảnh + text (multimodal)`);
+    } else {
+      userContent = prompt;
+      this.logger.log(`[API] Gọi ${this.MODEL} với text only (${content.length} chars)`);
+    }
+
+    const startMs = Date.now();
+    let response: any;
+    try {
+      response = await axios.post(
+        this.openaiApiUrl,
+        {
+          model: this.MODEL,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Bạn là chuyên gia phân tích thị trường Bitcoin hàng đầu, am hiểu sâu về cách tin tức, chính trị, và sự kiện vĩ mô tác động đến tâm lý thị trường và giá BTC. ' +
+                'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
+                'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
+            },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.3,
+          max_tokens: 600,
         },
-      },
-    ).catch((err) => {
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.openaiApiKey}`,
+          },
+          timeout: 30000,
+        },
+      );
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const body = JSON.stringify(err?.response?.data ?? {}).substring(0, 300);
       const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error('Grok API error: ' + errMsg);
+      this.logger.error(
+        `[API ERROR] OpenAI call thất bại | status=${status ?? 'N/A'} | ` +
+        `model=${this.MODEL} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
+        `error=${errMsg} | response_body=${body}`,
+      );
       throw err;
-    });
+    }
+
+    const elapsedMs = Date.now() - startMs;
+    const usage = response.data?.usage;
+    this.logger.log(
+      `[API OK] ${this.MODEL} | ${elapsedMs}ms | ` +
+      `tokens: in=${usage?.prompt_tokens ?? '?'} out=${usage?.completion_tokens ?? '?'} total=${usage?.total_tokens ?? '?'} | ` +
+      `daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT}`,
+    );
 
     const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
-    if (!raw) throw new Error('Grok trả về response rỗng');
+    if (!raw) throw new Error('OpenAI trả về response rỗng');
+
+    // Strip markdown code fences nếu có (gpt-4o-mini đôi khi wrap trong ```json```)
+    const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
 
     let parsed: any;
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(cleaned);
     } catch {
-      this.logger.error('JSON parse lỗi, raw:\n' + raw);
-      throw new Error('Grok response không phải JSON hợp lệ');
+      this.logger.error(`[JSON ERROR] Không parse được response. Raw (${raw.length} chars):\n${raw.substring(0, 500)}`);
+      throw new Error('OpenAI response không phải JSON hợp lệ');
     }
 
     return {
@@ -209,7 +247,7 @@ export class AnalysisService {
   }
 
 
-  private buildPrompt(content: string, market: MarketContextResult): string {
+  private buildPrompt(content: string, market: MarketContextResult, hasImages = false): string {
     const fmt = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : 'N/A';
     const chg = (n: number) => (n >= 0 ? `+${n}` : `${n}`) + '%';
 
@@ -231,11 +269,15 @@ export class AnalysisService {
       ? `cach dinh 52 tuan ${Math.abs(market.pctFromHigh52w)}%`
       : 'gan dinh 52 tuan';
 
+    const contentSection = hasImages && !content.trim()
+      ? '[Bai dang chi co hinh anh, khong co van ban. Hay phan tich noi dung hinh anh o tren.]'
+      : `"${content}"`;
+
     return `Phan tich bai dang sau cua Donald Trump tren Truth Social.
 
 BAI VIET:
-"${content}"
-
+${contentSection}
+${hasImages ? '(Xem them hinh anh dinh kem phia tren bai viet)\n' : ''}
 ${marketBlock}
 
 HUONG DAN PHAN TICH - suy nghi theo cac goc do lien quan nhat:
@@ -273,115 +315,57 @@ Tra ve ONLY valid JSON:
   }
 
   /**
-   * Lấy thông tin credit/balance còn lại từ Grok/OpenAI billing endpoints.
-   * Trả về một chuỗi mô tả hoặc ném lỗi nếu không thể lấy.
+   * Kiểm tra credit/quota OpenAI còn lại.
+   * OpenAI không có public billing endpoint — chỉ verify key hợp lệ và trả về daily call stats.
    */
   public async getRemainingCredits(): Promise<string> {
-    if (!this.grokApiKey) {
-      return 'GROK_API_KEY chưa được cấu hình. Vui lòng thêm vào .env hoặc biến môi trường và khởi động lại ứng dụng.';
+    if (!this.openaiApiKey) {
+      return 'OPENAI_API_KEY chưa được cấu hình. Thêm vào .env và restart app.';
     }
 
-    // Helper để thử các endpoint với một key cụ thể
-    const tryWithKey = async (key: string, label: string): Promise<string | null> => {
-      const billingCandidates = [
-        'https://api.x.ai/v1/dashboard/billing/credit_grants',
-        'https://api.openai.com/v1/dashboard/billing/credit_grants',
-        'https://api.x.ai/v1/billing/credits',
-        'https://api.x.ai/v1/credits',
-      ];
+    const stats = this.getDailyCallStats();
+    const statsStr = `Daily calls hôm nay (${stats.date}): ${stats.count}/${stats.limit}`;
 
+    try {
+      // Thử lấy billing từ OpenAI Usage API
+      const billingCandidates = [
+        'https://api.openai.com/v1/dashboard/billing/credit_grants',
+        'https://api.openai.com/v1/dashboard/billing/subscription',
+      ];
       for (const url of billingCandidates) {
         try {
           const resp = await axios.get(url, {
-            headers: { Authorization: `Bearer ${key}` },
+            headers: { Authorization: `Bearer ${this.openaiApiKey}` },
             timeout: 7000,
           });
           const d = resp.data;
-          if (!d) continue;
-
-          if (typeof d.total_granted !== 'undefined' || typeof d.total_used !== 'undefined') {
-            const granted = Number(d.total_granted ?? d.total_available ?? 0);
-            const used = Number(d.total_used ?? d.total_usage ?? 0);
-            const remaining = Math.max(0, granted - used);
-            return `${label}: Còn lại: ${remaining} (đã cấp: ${granted}, đã dùng: ${used}) — nguồn: ${url}`;
+          if (d?.total_available != null) {
+            return `OpenAI credit còn lại: $${Number(d.total_available).toFixed(4)} | ${statsStr}`;
           }
-          if (typeof d.balance !== 'undefined') {
-            return `${label}: Còn lại: ${d.balance} — nguồn: ${url}`;
+          if (d?.hard_limit_usd != null) {
+            return `OpenAI quota: hard_limit=$${d.hard_limit_usd}, soft_limit=$${d.soft_limit_usd ?? 'N/A'} | ${statsStr}`;
           }
-          if (typeof d.credits !== 'undefined') {
-            return `${label}: Còn lại: ${d.credits} — nguồn: ${url}`;
-          }
-
-          try {
-            const pretty = JSON.stringify(d, null, 2);
-            return `${label}: Kết quả (billing endpoint ${url}): ${pretty.substring(0, 1000)}`;
-          } catch {
-            return `${label}: Không thể đọc response từ ${url}`;
-          }
-        } catch (err: any) {
-          const status = err?.response?.status;
-          if (status === 401 || status === 403) {
-            // Key không hợp lệ cho endpoint này → báo và tiếp tục thử các key khác
-            return `${label}: KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}) khi gọi ${url}`;
-          }
-          // khác thì thử endpoint tiếp
+        } catch {
           continue;
         }
       }
 
-      // Kiểm tra models endpoint để xác nhận key có hợp lệ để gọi API hay không
-      const modelCandidates = ['https://api.x.ai/v1/models', 'https://api.openai.com/v1/models'];
-      for (const url of modelCandidates) {
-        try {
-          const resp = await axios.get(url, {
-            headers: { Authorization: `Bearer ${key}` },
-            timeout: 7000,
-          });
-          if (resp.status === 200 && resp.data) {
-            const data = resp.data.data ?? resp.data.models ?? resp.data;
-            let models: string[] = [];
-            if (Array.isArray(data)) {
-              models = data.slice(0, 5).map((m: any) => m.id ?? m.name ?? String(m));
-            }
-            const modelList = models.length ? models.join(', ') : JSON.stringify(resp.data).substring(0, 200);
-            return `${label}: API key hợp lệ. Models truy cập: ${modelList}. Lưu ý: billing có thể không public.`;
-          }
-        } catch (err: any) {
-          const status = err?.response?.status;
-          if (status === 401 || status === 403) {
-            return `${label}: KEY không hợp lệ hoặc bị từ chối truy cập (HTTP ${status}) khi gọi ${url}`;
-          }
-          continue;
-        }
+      // Fallback: verify key bằng cách gọi /v1/models
+      const resp = await axios.get('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${this.openaiApiKey}` },
+        timeout: 7000,
+      });
+      if (resp.status === 200) {
+        return `OpenAI API key hợp lệ ✅ | Model: ${this.MODEL} | ${statsStr} | Xem billing tại: platform.openai.com/usage`;
       }
-
-      return null;
-    };
-
-    // Thử với GROK_API_KEY trước
-    const grokResult = await tryWithKey(this.grokApiKey, 'GROK');
-    if (grokResult && grokResult.startsWith('GROK: KEY không hợp lệ')) {
-      // Nếu grok key không hợp lệ, thử OPENAI_API_KEY nếu có
-      const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
-      if (openaiKey) {
-        const openaiResult = await tryWithKey(openaiKey, 'OPENAI');
-        if (openaiResult) {
-          return `GROK key không hợp lệ. Thông tin từ OPENAI thay thế:\n${openaiResult}`;
-        }
-      }
-      return grokResult.replace('GROK: ', '');
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401) return `OpenAI API key không hợp lệ (HTTP 401) | ${statsStr}`;
+      if (status === 429) return `OpenAI rate limit / quota hết (HTTP 429) | ${statsStr}`;
+      return `Lỗi kiểm tra OpenAI key: ${err instanceof Error ? err.message : String(err)} | ${statsStr}`;
     }
 
-    if (grokResult) return grokResult;
-
-    // Cuối cùng, nếu GROK không trả kết quả nhưng OPENAI có key, thử OPENAI
-    const openaiKey = this.configService.get<string>('OPENAI_API_KEY');
-    if (openaiKey) {
-      const openaiResult = await tryWithKey(openaiKey, 'OPENAI');
-      if (openaiResult) return openaiResult;
-    }
-
-    return 'Không thể lấy thông tin credit từ Grok/OpenAI thông qua API. Có thể endpoint này không public; vui lòng kiểm tra biến môi trường GROK_API_KEY/OPENAI_API_KEY hoặc dashboard nhà cung cấp để biết chi tiết.';
+    return `OpenAI key OK | ${statsStr} | Billing: platform.openai.com/usage`;
   }
 
   /**

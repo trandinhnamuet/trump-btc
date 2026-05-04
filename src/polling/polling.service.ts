@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { TruthSocialService } from '../truth-social/truth-social.service';
-import { AnalysisService } from '../analysis/analysis.service';
+import { AnalysisService, DailyLimitExceededException } from '../analysis/analysis.service';
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { TelegramService } from '../telegram/telegram.service';
 import { StorageService } from '../storage/storage.service';
@@ -123,6 +123,15 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         );
         this.storageService.updatePost(post.id, { alerted: true });
       } catch (err) {
+        if (err instanceof DailyLimitExceededException) {
+          this.logger.error(
+            `[BACKFILL] Dừng backfill: ${err.message} | Đã xử lý một phần, còn lại sẽ được backfill sau khi restart.`,
+          );
+          if (err.shouldAlert) {
+            await this.telegramService.sendDailyLimitWarning();
+          }
+          break; // Dừng backfill loop ngay
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(`Backfill lỗi bài ${post.id}: ${errMsg}`);
       }
@@ -358,6 +367,9 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       // Nếu OpenAI lỗi, vẫn tiếp tục (đã lưu basic data, sẽ thiếu analysis)
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}: ${errMsg}`);
+      if (error instanceof DailyLimitExceededException && error.shouldAlert) {
+        await this.telegramService.sendDailyLimitWarning();
+      }
     }
 
     this.logger.log(`✅ Đã xử lý xong bài ${post.id}`);

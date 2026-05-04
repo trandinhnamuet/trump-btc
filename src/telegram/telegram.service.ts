@@ -476,13 +476,13 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /credit command - show remaining Grok credits
+    // Handle /credit command - show OpenAI usage stats
     this.bot.onText(/^\/credit(?:@[\w_]+)?(?:\s.*)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
-        await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra credit Grok...');
+        await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra OpenAI credit...');
         const info = await this.analysisService.getRemainingCredits();
-        await this.bot?.sendMessage(chatId, `💳 <b>Grok credit:</b>\n${this.escapeHtml(String(info))}`, { parse_mode: 'HTML' });
+        await this.bot?.sendMessage(chatId, `💳 <b>OpenAI credit:</b>\n${this.escapeHtml(String(info))}`, { parse_mode: 'HTML' });
         this.logger.log(`✅ /credit: responded to ${msg.chat.first_name || chatId}`);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -676,6 +676,37 @@ export class TelegramService implements OnModuleInit {
         this.logger.error(
           `Không thể gửi đến ${user.name} (${user.chatId}): ${errMsg}`,
         );
+      }
+    }
+  }
+
+  /**
+   * Gửi tin nhắn cảnh báo giới hạn API đến tất cả users.
+   * Được gọi khi AnalysisService ném DailyLimitExceededException lần đầu trong ngày.
+   */
+  async sendDailyLimitWarning(): Promise<void> {
+    if (!this.bot) return;
+    this.loadUsers();
+    if (this.users.length === 0) {
+      this.logger.warn('[RATE LIMIT] Không có user nào để gửi cảnh báo');
+      return;
+    }
+    const stats = this.analysisService.getDailyCallStats();
+    const message =
+      `⚠️ <b>CảNH BÁO: Bot đã đạt giới hạn API hôm nay!</b>\n\n` +
+      `📊 API calls hôm nay: <b>${stats.count}/${stats.limit}</b>\n` +
+      `🔒 Phân tích tạm dừng đến <b>0:00 ngày mai</b>\n\n` +
+      `💡 Nếu cần phân tích ngay, dùng /test &lt;nội dung&gt;`;
+    this.logger.error(
+      `[RATE LIMIT] Gửi cảnh báo đến ${this.users.length} users: daily_calls=${stats.count}/${stats.limit}`,
+    );
+    for (const user of this.users) {
+      try {
+        await this.bot.sendMessage(user.chatId, message, { parse_mode: 'HTML' });
+        this.logger.log(`[RATE LIMIT] Đã gửi cảnh báo đến ${user.name} (${user.chatId})`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`[RATE LIMIT] Không gửi được cảnh báo đến ${user.name}: ${errMsg}`);
       }
     }
   }

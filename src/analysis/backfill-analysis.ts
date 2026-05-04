@@ -60,10 +60,10 @@ function loadEnv(): Record<string, string> {
   return env;
 }
 
-async function analyzePost(grokApiKey: string, content: string): Promise<AnalysisResult> {
+async function analyzePost(apiKey: string, content: string): Promise<AnalysisResult> {
   const prompt = buildAnalysisPrompt(content);
   const response = await axios.post(
-    'https://api.x.ai/v1/chat/completions',
+    'https://api.openai.com/v1/chat/completions',
     {
       messages: [
         {
@@ -76,14 +76,14 @@ Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu c
           content: prompt,
         },
       ],
-      model: 'grok-4-latest',
+      model: 'gpt-4o-mini',
       temperature: 0.3,
       max_tokens: 500,
     },
     {
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${grokApiKey}`,
+        'Authorization': `Bearer ${apiKey}`,
       },
     },
   );
@@ -110,9 +110,9 @@ async function backfillAnalysis() {
   try {
     // Load .env
     const env = loadEnv();
-    const apiKey = env.GROK_API_KEY;
+    const apiKey = env.OPENAI_API_KEY;
     if (!apiKey) {
-      console.log('❌ GROK_API_KEY chưa được cấu hình trong .env');
+      console.log('❌ OPENAI_API_KEY chưa được cấu hình trong .env');
       process.exit(1);
     }
 
@@ -125,7 +125,7 @@ async function backfillAnalysis() {
     // Read current posts
     const data: StorageData = JSON.parse(fs.readFileSync(postsFile, 'utf-8'));
     const postsNeedingAnalysis = data.posts.filter(
-      (p) => !p.btcInfluenceProbability && p.content
+      (p) => p.btcInfluenceProbability == null && p.content
     );
 
     if (postsNeedingAnalysis.length === 0) {
@@ -133,14 +133,21 @@ async function backfillAnalysis() {
       process.exit(0);
     }
 
-    console.log(`\n📊 Tìm thấy ${postsNeedingAnalysis.length} bài viết chưa được phân tích.\n`);
+    console.log(`\n📊 Tìm thấy ${postsNeedingAnalysis.length} bài viết chưa được phân tích.`);
+    console.log(`💡 Sử dụng model: gpt-4o-mini | ước tính chi phí: ~$${(postsNeedingAnalysis.length * 0.0002).toFixed(4)}`);
+    if (postsNeedingAnalysis.length > 50) {
+      console.log(`⚠️  CảNH BÁO: ${postsNeedingAnalysis.length} bài > 50! Kiểm tra filter trước khi chạy.`);
+      console.log(`   Bài đầu tiên: id=${postsNeedingAnalysis[0].id}, score=${postsNeedingAnalysis[0].btcInfluenceProbability ?? 'null'}`);
+      console.log(`   Nếu thấy nhiều bài score=null nhưng đã phân tích, hãy Ctrl+C ngay!`);
+    }
+    console.log();
 
     let successCount = 0;
     let errorCount = 0;
 
-    for (const post of postsNeedingAnalysis) {
+    for (const [idx, post] of postsNeedingAnalysis.entries()) {
       try {
-        console.log(`⏳ Phân tích bài ${post.id}: "${post.content.substring(0, 60)}..."`);
+        console.log(`[${idx + 1}/${postsNeedingAnalysis.length}] ⏳ Bài ${post.id}: "${post.content.substring(0, 60)}..."`);
         
         const analysis = await analyzePost(apiKey, post.content);
         
