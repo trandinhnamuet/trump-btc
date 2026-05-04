@@ -51,7 +51,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     // Warm-up delay 10s then start dynamic polling at 90-120s intervals
     this.schedulePoll(10_000);
     // Backfill: re-process any stored posts that never got OpenAI analysis
-    setTimeout(() => this.reprocessUnanalyzed(), 5_000);
+    // DISABLED: Bỏ qua các bài cache chưa đánh giá, chỉ đánh giá bài mới
+    // setTimeout(() => this.reprocessUnanalyzed(), 5_000);
   }
 
   onModuleDestroy() {
