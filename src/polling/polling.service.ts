@@ -92,7 +92,9 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url, mediaUrls: record.mediaUrls };
       try {
         const btcPrice = record.btcPriceAtPost ?? null;
-        const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
+        // Backfill: bỏ qua mediaUrls vì URL ảnh Truth Social hết hạn nhanh → gây invalid_image_url
+        // Nếu bài chỉ có ảnh (không có text), analyzePost sẽ trả về 0% mà không tốn API call
+        const analysis = await this.analysisService.analyzePost(post.content, []);
         this.storageService.updatePost(post.id, {
           summary: analysis.summary,
           btcInfluenceProbability: analysis.btcInfluenceProbability,
