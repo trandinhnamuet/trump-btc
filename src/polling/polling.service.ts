@@ -134,6 +134,23 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         }
         const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(`Backfill lỗi bài ${post.id}: ${errMsg}`);
+        // Lỗi 400 (invalid_image_url, nội dung bị từ chối...) là lỗi vĩnh viễn
+        // Đánh dấu đã phân tích để tránh retry vô hạn mỗi lần restart
+        const isPermError =
+          errMsg.includes('status code 400') ||
+          (err as any)?.response?.status === 400;
+        if (isPermError) {
+          this.storageService.updatePost(post.id, {
+            btcInfluenceProbability: 0,
+            ensembleProbability: 0,
+            btcDirection: 'neutral',
+            summary: 'Phân tích thất bại: URL ảnh không hợp lệ hoặc đã hết hạn.',
+            reasoning: errMsg,
+          });
+          this.logger.warn(
+            `[BACKFILL] Bài ${post.id}: lỗi 400 vĩnh viễn → đánh dấu đã phân tích (0%) để bỏ qua lần sau.`,
+          );
+        }
       }
     }
     this.logger.log('🔄 Backfill hoàn tất.');
