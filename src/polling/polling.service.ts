@@ -195,6 +195,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         const backoffMs = Math.min(cap, base * Math.pow(2, this.consecutive403 - 1));
         this.pauseUntil = Date.now() + backoffMs;
         this.logger.warn(`Truth Social 403 (lần #${this.consecutive403}); backoff ${Math.round(backoffMs / 60000)} phút`);
+      } else if (error instanceof DailyLimitExceededException) {
+        this.logger.warn(`[RATE LIMIT] Dừng poll cycle: đã đạt giới hạn API ngày hôm nay.`);
       } else {
         this.logger.error('Lỗi trong quá trình polling:', msg);
       }
@@ -367,8 +369,12 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       // Nếu OpenAI lỗi, vẫn tiếp tục (đã lưu basic data, sẽ thiếu analysis)
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}: ${errMsg}`);
-      if (error instanceof DailyLimitExceededException && error.shouldAlert) {
-        await this.telegramService.sendDailyLimitWarning();
+      if (error instanceof DailyLimitExceededException) {
+        if (error.shouldAlert) {
+          await this.telegramService.sendDailyLimitWarning();
+        }
+        // Re-throw để dừng xử lý các bài còn lại trong cùng poll cycle
+        throw error;
       }
     }
 
