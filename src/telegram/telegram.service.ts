@@ -241,7 +241,10 @@ export class TelegramService implements OnModuleInit {
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
         `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
-        `💳 /credit — Xem số credit Grok còn lại\n` +
+        `💳 /credit — Xem số credit OpenAI còn lại\n` +
+        `🤖 /model — Xem model AI đang dùng\n` +
+        `📋 /model-list — Danh sách model có thể dùng\n` +
+        `🔀 /model &lt;tên&gt; — Đổi sang model khác\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -474,6 +477,79 @@ export class TelegramService implements OnModuleInit {
         this.logger.error(`❌ Lỗi /prompt: ${errMsg}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi lấy prompt: ${errMsg}`);
       }
+    });
+
+    // Handle /model command — show, list, or switch model
+    this.bot.onText(/^\/model(?:@[\w_]+)?(?:\s+([\S]+))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const arg = match?.[1]?.trim();
+
+      if (!arg) {
+        // /model — show current model
+        const current = this.analysisService.getCurrentModel();
+        const models = this.analysisService.getAvailableModels();
+        const modelInfo = models.find(m => m.name === current);
+        const priceStr = modelInfo
+          ? `💰 Input: $${modelInfo.inputPrice}/1M tokens | Output: $${modelInfo.outputPrice}/1M tokens`
+          : '';
+        await this.bot?.sendMessage(
+          chatId,
+          `🤖 <b>Model hiện tại:</b> <code>${current}</code>\n${priceStr}`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      if (arg.toLowerCase() === 'list') {
+        // /model list — show available models
+        const list = this.analysisService.getAvailableModels();
+        const current = this.analysisService.getCurrentModel();
+        const lines = list.map(m => {
+          const check = m.name === current ? '✅ (đang dùng)' : '';
+          return `• <code>${m.name}</code> ${check}\n  💰 Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
+        });
+        await this.bot?.sendMessage(
+          chatId,
+          `📋 <b>Danh sách model:</b>\n\n${lines.join('\n\n')}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      // /model <name> — switch model
+      try {
+        const newModel = this.analysisService.setModel(arg);
+        const models = this.analysisService.getAvailableModels();
+        const modelInfo = models.find(m => m.name === newModel);
+        const priceStr = modelInfo
+          ? `\n💰 Input: $${modelInfo.inputPrice}/1M | Output: $${modelInfo.outputPrice}/1M`
+          : '';
+        await this.bot?.sendMessage(
+          chatId,
+          `✅ Đã đổi model thành <code>${newModel}</code>${priceStr}`,
+          { parse_mode: 'HTML' },
+        );
+        this.logger.log(`✅ /model: ${msg.chat.first_name || chatId} đổi sang ${newModel}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        await this.bot?.sendMessage(chatId, `❌ ${errMsg}`, { parse_mode: 'HTML' });
+      }
+    });
+
+    // Handle /model-list command — alias for /model list
+    this.bot.onText(/^\/model-list(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      const list = this.analysisService.getAvailableModels();
+      const current = this.analysisService.getCurrentModel();
+      const lines = list.map(m => {
+        const check = m.name === current ? '✅ (đang dùng)' : '';
+        return `• <code>${m.name}</code> ${check}\n  💰 Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
+      });
+      await this.bot?.sendMessage(
+        chatId,
+        `📋 <b>Danh sách model:</b>\n\n${lines.join('\n\n')}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`,
+        { parse_mode: 'HTML' },
+      );
     });
 
     // Handle /credit command - show OpenAI usage stats

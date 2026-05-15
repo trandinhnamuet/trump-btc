@@ -25,8 +25,16 @@ export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
   private readonly openaiApiKey: string;
   private readonly openaiApiUrl = 'https://api.openai.com/v1/chat/completions';
-  private readonly MODEL = 'gpt-4o-mini';
+  private currentModel = 'gpt-4o-mini';
   private readonly DAILY_LIMIT = 100;
+
+  static readonly AVAILABLE_MODELS = [
+    { name: 'gpt-4o-mini', inputPrice: 0.15, outputPrice: 0.60 },
+    { name: 'gpt-4o', inputPrice: 5, outputPrice: 15 },
+    { name: 'gpt-4.1-mini', inputPrice: 0.15, outputPrice: 0.60 },
+    { name: 'gpt-4.1', inputPrice: 10, outputPrice: 30 },
+    { name: 'o4-mini', inputPrice: 0.20, outputPrice: 0.80 },
+  ];
 
   // Daily rate limit state (in-memory, resets on restart or new calendar day)
   private dailyCallCount = 0;
@@ -40,7 +48,7 @@ export class AnalysisService {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     if (!apiKey) this.logger.warn('OPENAI_API_KEY chưa được cấu hình trong .env!');
     this.openaiApiKey = apiKey || '';
-    this.logger.log(`[CONFIG] Model: ${this.MODEL} | Daily limit: ${this.DAILY_LIMIT} calls/day`);
+    this.logger.log(`[CONFIG] Model: ${this.currentModel} | Daily limit: ${this.DAILY_LIMIT} calls/day`);
   }
 
   /** Kiểm tra xem content có phải là URL thuần hoặc RT+URL không có text thực */
@@ -71,7 +79,7 @@ export class AnalysisService {
     // Log ở các mốc cảnh báo
     if ([50, 75, 90, 95, 100].includes(this.dailyCallCount)) {
       this.logger.warn(
-        `[RATE LIMIT] ⚠️ Daily API calls: ${this.dailyCallCount}/${this.DAILY_LIMIT} (model=${this.MODEL})`,
+        `[RATE LIMIT] ⚠️ Daily API calls: ${this.dailyCallCount}/${this.DAILY_LIMIT} (model=${this.currentModel})`,
       );
     } else {
       this.logger.debug(`[RATE LIMIT] Daily API calls: ${this.dailyCallCount}/${this.DAILY_LIMIT}`);
@@ -92,6 +100,33 @@ export class AnalysisService {
   /** Trả về thống kê daily call để monitoring */
   getDailyCallStats(): { count: number; limit: number; date: string } {
     return { count: this.dailyCallCount, limit: this.DAILY_LIMIT, date: this.dailyCallDate };
+  }
+
+  /** Trả về model đang dùng hiện tại */
+  getCurrentModel(): string {
+    return this.currentModel;
+  }
+
+  /** Trả về danh sách model có thể dùng */
+  getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number }> {
+    return AnalysisService.AVAILABLE_MODELS;
+  }
+
+  /**
+   * Đổi model. Throws nếu tên không hợp lệ.
+   * @returns Tên model mới
+   */
+  setModel(modelName: string): string {
+    const normalized = modelName.trim().toLowerCase();
+    const found = AnalysisService.AVAILABLE_MODELS.find(m => m.name.toLowerCase() === normalized);
+    if (!found) {
+      throw new Error(
+        `Model "${modelName}" không có trong danh sách. Dùng /model-list để xem các model hợp lệ.`,
+      );
+    }
+    this.currentModel = found.name;
+    this.logger.log(`[MODEL] Đã đổi model → ${found.name}`);
+    return found.name;
   }
 
   async analyzePost(content: string, mediaUrls?: string[]): Promise<AnalysisResult> {
@@ -170,10 +205,10 @@ export class AnalysisService {
         ...mediaUrls.map(url => ({ type: 'image_url', image_url: { url, detail: 'low' } })),
         { type: 'text', text: prompt },
       ];
-      this.logger.log(`[API] Gọi ${this.MODEL} với ${mediaUrls.length} ảnh + text (multimodal)`);
+      this.logger.log(`[API] Gọi ${this.currentModel} với ${mediaUrls.length} ảnh + text (multimodal)`);
     } else {
       userContent = prompt;
-      this.logger.log(`[API] Gọi ${this.MODEL} với text only (${content.length} chars)`);
+      this.logger.log(`[API] Gọi ${this.currentModel} với text only (${content.length} chars)`);
     }
 
     const startMs = Date.now();
@@ -182,7 +217,7 @@ export class AnalysisService {
       response = await axios.post(
         this.openaiApiUrl,
         {
-          model: this.MODEL,
+          model: this.currentModel,
           messages: [
             {
               role: 'system',
@@ -210,7 +245,7 @@ export class AnalysisService {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.logger.error(
         `[API ERROR] OpenAI call thất bại | status=${status ?? 'N/A'} | ` +
-        `model=${this.MODEL} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
+        `model=${this.currentModel} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
         `error=${errMsg} | response_body=${body}`,
       );
       throw err;
@@ -219,7 +254,7 @@ export class AnalysisService {
     const elapsedMs = Date.now() - startMs;
     const usage = response.data?.usage;
     this.logger.log(
-      `[API OK] ${this.MODEL} | ${elapsedMs}ms | ` +
+      `[API OK] ${this.currentModel} | ${elapsedMs}ms | ` +
       `tokens: in=${usage?.prompt_tokens ?? '?'} out=${usage?.completion_tokens ?? '?'} total=${usage?.total_tokens ?? '?'} | ` +
       `daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT}`,
     );
@@ -259,7 +294,7 @@ Trả về ONLY valid JSON:
 {
   "summary": "Tóm tắt ngắn nội dung bài viết",
   "btcInfluenceProbability": <số nguyên 0-100>,
-  "btcDirection": <"increase" | "decrease" | "neutral">,
+  "btcDirection": <"increase" | "decrease">,
   "reasoning": "Giải thích ngắn gọn tác động đến BTC"
 }`;
   }
@@ -313,7 +348,7 @@ Trả về ONLY valid JSON:
         timeout: 7000,
       });
       if (resp.status === 200) {
-        return `OpenAI API key hợp lệ ✅ | Model: ${this.MODEL} | ${statsStr} | Xem billing tại: platform.openai.com/usage`;
+        return `OpenAI API key hợp lệ ✅ | Model: ${this.currentModel} | ${statsStr} | Xem billing tại: platform.openai.com/usage`;
       }
     } catch (err: any) {
       const status = err?.response?.status;
@@ -322,7 +357,7 @@ Trả về ONLY valid JSON:
       return `Lỗi kiểm tra OpenAI key: ${err instanceof Error ? err.message : String(err)} | ${statsStr}`;
     }
 
-    return `OpenAI key OK | ${statsStr} | Billing: platform.openai.com/usage`;
+    return `OpenAI key OK | Model: ${this.currentModel} | ${statsStr} | Billing: platform.openai.com/usage`;
   }
 
   /**
