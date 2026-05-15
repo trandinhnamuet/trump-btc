@@ -248,62 +248,19 @@ export class AnalysisService {
 
 
   private buildPrompt(content: string, market: MarketContextResult, hasImages = false): string {
-    const fmt = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : 'N/A';
-    const chg = (n: number) => (n >= 0 ? `+${n}` : `${n}`) + '%';
-
-    const marketBlock = market.currentPrice > 0
-      ? [
-          '=== DU LIEU THI TRUONG BTC HIEN TAI ===',
-          `Gia hien tai: ${fmt(market.currentPrice)}`,
-          `24h:          ${chg(market.change24h)}`,
-          `7 ngay:       ${chg(market.change7d)}`,
-          `30 ngay:      ${chg(market.change30d)}`,
-          `Bien do 52 tuan: ${fmt(market.low52w)} - ${fmt(market.high52w)}`,
-          `Cach dinh 52 tuan: ${market.pctFromHigh52w}%`,
-          `Trang thai: ${market.trendLabel}`,
-          '========================================',
-        ].join('\n')
-      : '(Khong co du lieu thi truong)';
-
-    const distFromHigh = market.pctFromHigh52w < -5
-      ? `cach dinh 52 tuan ${Math.abs(market.pctFromHigh52w)}%`
-      : 'gan dinh 52 tuan';
-
     const contentSection = hasImages && !content.trim()
-      ? '[Bai dang chi co hinh anh, khong co van ban. Hay phan tich noi dung hinh anh o tren.]'
-      : `"${content}"`;
+      ? '[Bài đăng chỉ có hình ảnh, không có văn bản]'
+      : content;
 
-    return `Phan tich bai dang sau cua Donald Trump tren Truth Social.
+    return `Trump vừa post 1 post trên Truth Social: ${contentSection}
+Hãy đánh giá tỉ lệ % khả năng tác động giá BTC của bài viết trên, và tác động tăng hay giảm.
 
-BAI VIET:
-${contentSection}
-${hasImages ? '(Xem them hinh anh dinh kem phia tren bai viet)\n' : ''}
-${marketBlock}
-
-HUONG DAN PHAN TICH - suy nghi theo cac goc do lien quan nhat:
-
-1. TAC DONG TAM LY: Tin nay gay cam xuc gi cho nha dau tu? Hung khoi, so hai, hay tho o?
-2. CO CHE TAC DONG DEN BTC: Dong tien dich chuyen qua kenh nao?
-3. DO MOI: Thi truong da dinh gia thong tin nay chua?
-4. THUC TE: Day la hanh dong cu the hay chi tuyen bo y dinh?
-5. BOI CANH: BTC dang ${distFromHigh}, xu huong "${market.trendLabel}".
-
-CALIBRATION XAC SUAT:
-- 0-10%: Khong lien quan kinh te/tai chinh
-- 10-30%: Tac dong gian tiep, yeu
-- 30-55%: Kinh te vi mo ro rang (thue quan, thuong chien, suy thoai, Fed)
-- 55-75%: TRUC TIEP lien quan crypto/Bitcoin/USD (EO ve crypto, chinh sach quy dinh)
-- 75-90%: Su kien dot pha bat ngo (My chinh thuc Bitcoin reserve, SEC approve ETF)
-- 90-100%: Su kien lich su cuc hiem
-
-LU Y: Khong duoc danh gia thap tin crypto truc tiep. EO cua Trump ve Crypto Strategic Reserve phai >= 70%.
-
-Tra ve ONLY valid JSON:
+Trả về ONLY valid JSON:
 {
-  "summary": "2-3 cau tom tat CHINH XAC NOI DUNG BAI VIET (Trump dang noi/viet/dang gi? Chu de chinh la gi?). KHONG duoc viet ve tac dong BTC o day.",
-  "btcInfluenceProbability": <so nguyen 0-100>,
+  "summary": "Tóm tắt ngắn nội dung bài viết",
+  "btcInfluenceProbability": <số nguyên 0-100>,
   "btcDirection": <"increase" | "decrease" | "neutral">,
-  "reasoning": "Phan tich ngan gon, toi da 50-75 chu, 1-2 cau. Giai thich tac dong tu noi dung toi BTC. VIET BANG TIENG VIET."
+  "reasoning": "Giải thích ngắn gọn tác động đến BTC"
 }`;
   }
 
