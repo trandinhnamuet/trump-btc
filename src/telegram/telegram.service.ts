@@ -542,14 +542,20 @@ export class TelegramService implements OnModuleInit {
       const list = this.analysisService.getAvailableModels();
       const current = this.analysisService.getCurrentModel();
       const lines = list.map(m => {
-        const check = m.name === current ? '✅ (đang dùng)' : '';
-        return `• <code>${m.name}</code> ${check}\n  💰 Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
+        const check = m.name === current ? ' ✅ (đang dùng)' : '';
+        return `${m.name}${check} — Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
       });
-      await this.bot?.sendMessage(
-        chatId,
-        `📋 <b>Danh sách model:</b>\n\n${lines.join('\n\n')}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`,
-        { parse_mode: 'HTML' },
-      );
+
+      const body = lines.join('\n');
+
+      // If the message is long, send in parts using existing helper
+      const fullMessage = `📋 DANH SÁCH MODEL\n\n${body}\n\nDùng /model <tên> để đổi.`;
+      if (fullMessage.length > 3800) {
+        // sendPromptInParts wraps content in <code> and escapes HTML
+        await this.sendPromptInParts(chatId, body, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
+      } else {
+        await this.bot?.sendMessage(chatId, fullMessage, { parse_mode: 'HTML' });
+      }
     });
 
     // Handle /credit command - show OpenAI usage stats
