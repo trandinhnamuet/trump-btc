@@ -1,6 +1,8 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AnalysisResult } from '../common/interfaces';
 import { MarketSignalService, MarketContextResult } from '../market-signal/market-signal.service';
 
@@ -28,11 +30,15 @@ export class AnalysisService {
   private currentModel = 'gpt-4o-mini';
   private readonly DAILY_LIMIT = 100;
 
-  static readonly AVAILABLE_MODELS = [
-    { name: 'gpt-4o-mini', inputPrice: 0.15, outputPrice: 0.60 },
-    { name: 'gpt-4o', inputPrice: 5, outputPrice: 15 },
-    { name: 'gpt-4.1-mini', inputPrice: 0.15, outputPrice: 0.60 },
+  // Static fallback list (used if scripts/models.json is not available)
+  static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number }> = [
+    { name: 'gpt-3.5-turbo', inputPrice: 2, outputPrice: 2 },
+    { name: 'gpt-3.5-turbo-16k', inputPrice: 3, outputPrice: 3 },
+    { name: 'gpt-4', inputPrice: 15, outputPrice: 45 },
     { name: 'gpt-4.1', inputPrice: 10, outputPrice: 30 },
+    { name: 'gpt-4o', inputPrice: 5, outputPrice: 15 },
+    { name: 'gpt-4o-mini', inputPrice: 0.15, outputPrice: 0.60 },
+    { name: 'gpt-4.1-mini', inputPrice: 0.15, outputPrice: 0.60 },
     { name: 'o4-mini', inputPrice: 0.20, outputPrice: 0.80 },
   ];
 
@@ -107,9 +113,39 @@ export class AnalysisService {
     return this.currentModel;
   }
 
-  /** Trả về danh sách model có thể dùng */
+  /** Estimate prices (per 1M tokens) for a model id using simple heuristics */
+  private estimatePrices(modelId: string): { inputPrice: number; outputPrice: number } {
+    const id = (modelId || '').toLowerCase();
+    const isMini = id.includes('mini') || id.includes('nano');
+    const miniFactor = isMini ? 0.1 : 1;
+    if (id.startsWith('gpt-5')) return { inputPrice: 25 * miniFactor, outputPrice: 75 * miniFactor };
+    if (id.startsWith('gpt-4.1')) return { inputPrice: 10 * miniFactor, outputPrice: 30 * miniFactor };
+    if (id.startsWith('gpt-4o')) return { inputPrice: 5 * miniFactor, outputPrice: 15 * miniFactor };
+    if (id.startsWith('gpt-4')) return { inputPrice: 15 * miniFactor, outputPrice: 45 * miniFactor };
+    if (id.startsWith('gpt-3.5')) return { inputPrice: 2 * miniFactor, outputPrice: 2 * miniFactor };
+    return { inputPrice: 5 * miniFactor, outputPrice: 15 * miniFactor };
+  }
+
+  /** Trả về danh sách model có thể dùng — đọc từ scripts/models.json nếu có, ngược lại fallback tĩnh */
   getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number }> {
-    return AnalysisService.AVAILABLE_MODELS;
+    try {
+      const modelsPath = path.join(process.cwd(), 'scripts', 'models.json');
+      if (fs.existsSync(modelsPath)) {
+        const raw = fs.readFileSync(modelsPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const items = Array.isArray(parsed?.data) ? parsed.data : [];
+        const gptModels = items
+          .filter((m: any) => typeof m.id === 'string' && m.id.startsWith('gpt-'))
+          .map((m: any) => {
+            const p = this.estimatePrices(m.id);
+            return { name: m.id, inputPrice: p.inputPrice, outputPrice: p.outputPrice };
+          });
+        if (gptModels.length > 0) return gptModels;
+      }
+    } catch (err) {
+      this.logger.warn(`Không đọc được scripts/models.json: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return AnalysisService.STATIC_MODELS;
   }
 
   /**
@@ -118,11 +154,17 @@ export class AnalysisService {
    */
   setModel(modelName: string): string {
     const normalized = modelName.trim().toLowerCase();
-    const found = AnalysisService.AVAILABLE_MODELS.find(m => m.name.toLowerCase() === normalized);
+    const models = this.getAvailableModels();
+    let found = models.find(m => m.name.toLowerCase() === normalized);
     if (!found) {
-      throw new Error(
-        `Model "${modelName}" không có trong danh sách. Dùng /model-list để xem các model hợp lệ.`,
-      );
+      // allow matching by prefix (e.g. user types 'gpt-4o-mini' to match 'gpt-4o-mini-2024-07-18')
+      found = models.find(m => m.name.toLowerCase().startsWith(normalized));
+    }
+    if (!found) {
+      found = models.find(m => m.name.toLowerCase().includes(normalized));
+    }
+    if (!found) {
+      throw new Error(`Model "${modelName}" không có trong danh sách. Dùng /model-list để xem các model hợp lệ.`);
     }
     this.currentModel = found.name;
     this.logger.log(`[MODEL] Đã đổi model → ${found.name}`);
