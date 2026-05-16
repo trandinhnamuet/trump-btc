@@ -1,0 +1,294 @@
+{
+  "ok": true,
+  "source": "https://openai.com/api/pricing/",
+  "extractedCount": 34,
+  "map": {
+    "GPT-5.5": {
+      "inputPrice": 5,
+      "outputPrice": 0.5,
+      "raw": [
+        {
+          "price": 5,
+          "unit": "1M",
+          "context": "them ideal for complex, multi-step problems. Choose your processing mode Standard Batch -50% Data residency +10% GPT-5.5 A new class of intelligence for coding and professional work. Price Input: $5.00 / 1M tokens Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M",
+          "modelId": "GPT-5.5",
+          "role": "input"
+        },
+        {
+          "price": 0.5,
+          "unit": "1M",
+          "context": "tep problems. Choose your processing mode Standard Batch -50% Data residency +10% GPT-5.5 A new class of intelligence for coding and professional work. Price Input: $5.00 / 1M tokens Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M toke",
+          "modelId": "GPT-5.5",
+          "role": "input"
+        },
+        {
+          "price": 30,
+          "unit": "1M",
+          "context": "processing mode Standard Batch -50% Data residency +10% GPT-5.5 A new class of intelligence for coding and professional work. Price Input: $5.00 / 1M tokens Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our stron",
+          "modelId": "GPT-5.5",
+          "role": "input"
+        }
+      ]
+    },
+    "GPT-5.4": {
+      "inputPrice": 2.5,
+      "outputPrice": 0.25,
+      "raw": [
+        {
+          "price": 2.5,
+          "unit": "1M",
+          "context": "ding and professional work. Price Input: $5.00 / 1M tokens Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        },
+        {
+          "price": 0.25,
+          "unit": "1M",
+          "context": "ce Input: $5.00 / 1M tokens Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached input: $0.075 / 1M tokens Output",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        },
+        {
+          "price": 15,
+          "unit": "1M",
+          "context": "s Cached input: $0.50 / 1M tokens Output: $30.00 / 1M tokens GPT-5.4 A more affordable model for coding and professional work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached input: $0.075 / 1M tokens Output: $4.50 / 1M tokens Prici",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        },
+        {
+          "price": 0.75,
+          "unit": "1M",
+          "context": "onal work. Price Input: $2.50 / 1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached input: $0.075 / 1M tokens Output: $4.50 / 1M tokens Pricing above reflects standard processing rates for context lengths under 270K. Learn more about Batch Processing⁠ (opens",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        },
+        {
+          "price": 0.075,
+          "unit": "1M",
+          "context": "1M tokens Cached input: $0.25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached input: $0.075 / 1M tokens Output: $4.50 / 1M tokens Pricing above reflects standard processing rates for context lengths under 270K. Learn more about Batch Processing⁠ (opens in a new window) and Data resi",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        },
+        {
+          "price": 4.5,
+          "unit": "1M",
+          "context": ".25 / 1M tokens Output: $15.00 / 1M tokens GPT-5.4 mini Our strongest mini model yet for coding, computer use, and subagents. Price Input: $0.75 / 1M tokens Cached input: $0.075 / 1M tokens Output: $4.50 / 1M tokens Pricing above reflects standard processing rates for context lengths under 270K. Learn more about Batch Processing⁠ (opens in a new window) and Data residency & Regional Processing",
+          "modelId": "GPT-5.4",
+          "role": "input"
+        }
+      ]
+    },
+    "GPT-Realtime-2": {
+      "inputPrice": 32,
+      "outputPrice": 0.4,
+      "raw": [
+        {
+          "price": 32,
+          "unit": "1M",
+          "context": "plications across text, image, and audio with models built for real-time interaction and rich media generation. GPT-Realtime-2 Our most capable model for realtime voice interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs",
+          "modelId": "GPT-Realtime-2",
+          "role": "input"
+        },
+        {
+          "price": 0.4,
+          "unit": "1M",
+          "context": "and audio with models built for real-time interaction and rich media generation. GPT-Realtime-2 Our most capable model for realtime voice interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for",
+          "modelId": "GPT-Realtime-2",
+          "role": "input"
+        },
+        {
+          "price": 64,
+          "unit": "1M",
+          "context": "l-time interaction and rich media generation. GPT-Realtime-2 Our most capable model for realtime voice interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached",
+          "modelId": "GPT-Realtime-2",
+          "role": "input"
+        },
+        {
+          "price": 4,
+          "unit": "1M",
+          "context": "ration. GPT-Realtime-2 Our most capable model for realtime voice interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new",
+          "modelId": "GPT-Realtime-2",
+          "role": "input"
+        }
+      ]
+    },
+    "GPT-Realtime-Translate": {
+      "inputPrice": 0.4,
+      "outputPrice": 24,
+      "raw": [
+        {
+          "price": 0.4,
+          "unit": "1M",
+          "context": "most capable model for realtime voice interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that t",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        },
+        {
+          "price": 24,
+          "unit": "1M",
+          "context": "e interactions. Price Audio: $32.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that translates speech in real time and ke",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        },
+        {
+          "price": 5,
+          "unit": "1M",
+          "context": "1M tokens for inputs $0.40 / 1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that translates speech in real time and keeps pace with the speaker. Price $0.0",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        },
+        {
+          "price": 0.5,
+          "unit": "1M",
+          "context": "1M tokens for cached inputs $64.00 / 1M tokens for outputs Text: $4.00 / 1M tokens for inputs $0.40 / 1M tokens for cached inputs $24.00 / 1M tokens for outputs Image: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that translates speech in real time and keeps pace with the speaker. Price $0.034 per minute / $0.00057 per",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        },
+        {
+          "price": 0.034,
+          "unit": "m",
+          "context": "ge: $5.00 / 1M tokens for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that translates speech in real time and keeps pace with the speaker. Price $0.034 per minute / $0.00057 per second GPT-Realtime-Whisper A new streaming speech-to-text that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Im",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        },
+        {
+          "price": 0.00057,
+          "unit": null,
+          "context": "s for inputs $0.50 / 1M tokens for cached inputs GPT-Realtime-Translate A new live translation model that translates speech in real time and keeps pace with the speaker. Price $0.034 per minute / $0.00057 per second GPT-Realtime-Whisper A new streaming speech-to-text that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-",
+          "modelId": "GPT-Realtime-Translate",
+          "role": "input"
+        }
+      ]
+    },
+    "GPT-Realtime-Whisper": {
+      "inputPrice": 0.017,
+      "outputPrice": 0.00028,
+      "raw": [
+        {
+          "price": 0.017,
+          "unit": "m",
+          "context": "time and keeps pace with the speaker. Price $0.034 per minute / $0.00057 per second GPT-Realtime-Whisper A new streaming speech-to-text that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for ou",
+          "modelId": "GPT-Realtime-Whisper",
+          "role": "input"
+        },
+        {
+          "price": 0.00028,
+          "unit": null,
+          "context": "with the speaker. Price $0.034 per minute / $0.00057 per second GPT-Realtime-Whisper A new streaming speech-to-text that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 /",
+          "modelId": "GPT-Realtime-Whisper",
+          "role": "input"
+        }
+      ]
+    },
+    "GPT-Image-2": {
+      "inputPrice": 8,
+      "outputPrice": 2,
+      "raw": [
+        {
+          "price": 8,
+          "unit": "1M",
+          "context": "A new streaming speech-to-text that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 / 1M tokens for inputs $1.25 / 1M tokens for cached inputs Tools Extend model capabilitie",
+          "modelId": "GPT-Image-2",
+          "role": "input"
+        },
+        {
+          "price": 2,
+          "unit": "1M",
+          "context": "t that transcribes speech live as the speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 / 1M tokens for inputs $1.25 / 1M tokens for cached inputs Tools Extend model capabilities with built-in tools for ret",
+          "modelId": "GPT-Image-2",
+          "role": "input"
+        },
+        {
+          "price": 30,
+          "unit": "1M",
+          "context": "e speaker talks. Price $0.017 per minute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 / 1M tokens for inputs $1.25 / 1M tokens for cached inputs Tools Extend model capabilities with built-in tools for retrieval, execution, and external data",
+          "modelId": "GPT-Image-2",
+          "role": "input"
+        },
+        {
+          "price": 5,
+          "unit": "1M",
+          "context": "nute / $0.00028 per second GPT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 / 1M tokens for inputs $1.25 / 1M tokens for cached inputs Tools Extend model capabilities with built-in tools for retrieval, execution, and external data access. Web search Retrieve up-to-d",
+          "modelId": "GPT-Image-2",
+          "role": "input"
+        }
+      ]
+    },
+    "unknown": {
+      "inputPrice": 1.25,
+      "outputPrice": 10000,
+      "raw": [
+        {
+          "price": 1.25,
+          "unit": "1M",
+          "context": "PT-Image-2 State-of-the-art image generation model. Price Image: $8.00 / 1M tokens for inputs $2.00 / 1M tokens for cached inputs $30.00 / 1M tokens for outputs Text: $5.00 / 1M tokens for inputs $1.25 / 1M tokens for cached inputs Tools Extend model capabilities with built-in tools for retrieval, execution, and external data access. Web search Retrieve up-to-date information from the web",
+          "modelId": null,
+          "role": "input"
+        },
+        {
+          "price": 10,
+          "unit": "1k",
+          "context": "Tools Extend model capabilities with built-in tools for retrieval, execution, and external data access. Web search Retrieve up-to-date information from the web to ground model responses. Price $10.00 / 1k calls Search content tokens are free. Containers Run code and tools in secure, scalable environments alongside your models. Price Now: 1 GB for $0.03 / 64GB for $1.92 per container S",
+          "modelId": null,
+          "role": "output"
+        },
+        {
+          "price": 0.03,
+          "unit": null,
+          "context": "web to ground model responses. Price $10.00 / 1k calls Search content tokens are free. Containers Run code and tools in secure, scalable environments alongside your models. Price Now: 1 GB for $0.03 / 64GB for $1.92 per container Starting March 31, 2026: 1 GB for $0.03 / 64GB for $1.92 per 20-minute session per container Service tiers Balance performance, predictable costs, and availabil",
+          "modelId": null,
+          "role": "output"
+        },
+        {
+          "price": 1.92,
+          "unit": null,
+          "context": "el responses. Price $10.00 / 1k calls Search content tokens are free. Containers Run code and tools in secure, scalable environments alongside your models. Price Now: 1 GB for $0.03 / 64GB for $1.92 per container Starting March 31, 2026: 1 GB for $0.03 / 64GB for $1.92 per 20-minute session per container Service tiers Balance performance, predictable costs, and availability based on your",
+          "modelId": null,
+          "role": "output"
+        },
+        {
+          "price": 0.03,
+          "unit": null,
+          "context": "tokens are free. Containers Run code and tools in secure, scalable environments alongside your models. Price Now: 1 GB for $0.03 / 64GB for $1.92 per container Starting March 31, 2026: 1 GB for $0.03 / 64GB for $1.92 per 20-minute session per container Service tiers Balance performance, predictable costs, and availability based on your needs. Batch API Save 50% on inputs and outputs with",
+          "modelId": null,
+          "role": "input"
+        },
+        {
+          "price": 1.92,
+          "unit": null,
+          "context": "Containers Run code and tools in secure, scalable environments alongside your models. Price Now: 1 GB for $0.03 / 64GB for $1.92 per container Starting March 31, 2026: 1 GB for $0.03 / 64GB for $1.92 per 20-minute session per container Service tiers Balance performance, predictable costs, and availability based on your needs. Batch API Save 50% on inputs and outputs with the Batch API an",
+          "modelId": null,
+          "role": "input"
+        },
+        {
+          "price": 0.000263,
+          "unit": null,
+          "context": "ex Set width px by Set height px = $0.000263 Low resolution Price per 1M tokens (fixed) $1.25 512 × 512 tiles 1 × 1 Total tiles 1 Base tokens 70 Tile tokens 140 × 1 = 140 Total tokens 210 Total price $0.000263 Start creating with OpenAI’s powerful models. Get started (opens in a new window) Contact sales Our Research Research Index Research Overview Research Residency Economic Research Latest Adva",
+          "modelId": null,
+          "role": "unknown"
+        }
+      ]
+    },
+    "gpt-4o": {
+      "inputPrice": 0.000263,
+      "outputPrice": 1.25,
+      "raw": [
+        {
+          "price": 0.000263,
+          "unit": null,
+          "context": "earch o3-pro-2025-06-10 o4-mini o4-mini-deep-research o1 o1-pro gpt-4o gpt-4o-2024-05-13 gpt-4o-mini computer-use-preview gpt-4.5-preview codex-mini-latest gpt-5-codex Set width px by Set height px = $0.000263 Low resolution Price per 1M tokens (fixed) $1.25 512 × 512 tiles 1 × 1 Total tiles 1 Base tokens 70 Tile tokens 140 × 1 = 140 Total tokens 210 Total price $0.000263 Start creating with OpenA",
+          "modelId": "gpt-4o",
+          "role": "unknown"
+        },
+        {
+          "price": 1.25,
+          "unit": null,
+          "context": "o1 o1-pro gpt-4o gpt-4o-2024-05-13 gpt-4o-mini computer-use-preview gpt-4.5-preview codex-mini-latest gpt-5-codex Set width px by Set height px = $0.000263 Low resolution Price per 1M tokens (fixed) $1.25 512 × 512 tiles 1 × 1 Total tiles 1 Base tokens 70 Tile tokens 140 × 1 = 140 Total tokens 210 Total price $0.000263 Start creating with OpenAI’s powerful models. Get started (opens in a new wind",
+          "modelId": "gpt-4o",
+          "role": "unknown"
+        }
+      ]
+    }
+  },
+  "nextData": null
+}

@@ -130,21 +130,71 @@ export class AnalysisService {
   getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number }> {
     try {
       const modelsPath = path.join(process.cwd(), 'scripts', 'models.json');
+      const pricingPath = path.join(process.cwd(), 'scripts', 'pricing_puppeteer.json');
+
+      // load pricing map if available
+      let pricingMap: Record<string, { inputPrice: number; outputPrice: number }> = {};
+      if (fs.existsSync(pricingPath)) {
+        try {
+          const rawP = fs.readFileSync(pricingPath, 'utf8');
+          const parsedP = JSON.parse(rawP);
+          const m = parsedP?.map || parsedP?.priceMap || parsedP?.map || null;
+          if (m && typeof m === 'object') {
+            for (const k of Object.keys(m)) {
+              const entry = m[k];
+              if (entry && (entry.inputPrice != null || entry.outputPrice != null)) {
+                pricingMap[k.toLowerCase()] = {
+                  inputPrice: Number(entry.inputPrice || entry.input || 0),
+                  outputPrice: Number(entry.outputPrice || entry.output || entry.outputPrice || 0),
+                };
+              }
+            }
+          }
+        } catch (e) {
+          this.logger.warn(`Không đọc được scripts/pricing_puppeteer.json: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
       if (fs.existsSync(modelsPath)) {
         const raw = fs.readFileSync(modelsPath, 'utf8');
         const parsed = JSON.parse(raw);
         const items = Array.isArray(parsed?.data) ? parsed.data : [];
         const gptModels = items
-          .filter((m: any) => typeof m.id === 'string' && m.id.startsWith('gpt-'))
+          .filter((m: any) => typeof m.id === 'string' && m.id.toLowerCase().startsWith('gpt-'))
           .map((m: any) => {
-            const p = this.estimatePrices(m.id);
-            return { name: m.id, inputPrice: p.inputPrice, outputPrice: p.outputPrice };
+            const modelId = m.id;
+            const heur = this.estimatePrices(modelId);
+            const normalized = modelId.toLowerCase();
+            const priceOverride = pricingMap[normalized];
+            if (priceOverride) {
+              return { name: modelId, inputPrice: priceOverride.inputPrice, outputPrice: priceOverride.outputPrice };
+            }
+            return { name: modelId, inputPrice: heur.inputPrice, outputPrice: heur.outputPrice };
           });
         if (gptModels.length > 0) return gptModels;
       }
     } catch (err) {
-      this.logger.warn(`Không đọc được scripts/models.json: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.warn(`Không đọc được scripts/models.json hoặc pricing file: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Fallback: apply pricing overrides to static list if available
+    try {
+      const pricingPath = path.join(process.cwd(), 'scripts', 'pricing_puppeteer.json');
+      if (fs.existsSync(pricingPath)) {
+        const rawP = fs.readFileSync(pricingPath, 'utf8');
+        const parsedP = JSON.parse(rawP);
+        const m = parsedP?.map || parsedP?.priceMap || parsedP?.map || null;
+        if (m && typeof m === 'object') {
+          return AnalysisService.STATIC_MODELS.map(s => {
+            const override = m[s.name] || m[s.name.toUpperCase()] || m[s.name.toLowerCase()];
+            if (override) return { name: s.name, inputPrice: Number(override.inputPrice || override.input || s.inputPrice), outputPrice: Number(override.outputPrice || override.output || s.outputPrice) };
+            return s;
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     return AnalysisService.STATIC_MODELS;
   }
 

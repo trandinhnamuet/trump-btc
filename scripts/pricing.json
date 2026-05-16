@@ -1,0 +1,11 @@
+﻿{
+    "ok":  true,
+    "source":  "litellm",
+    "map":  {
+                "gpt-4o":  {
+                               "outputPrice":  0,
+                               "unit":  "1M",
+                               "inputPrice":  0
+                           }
+            }
+}
