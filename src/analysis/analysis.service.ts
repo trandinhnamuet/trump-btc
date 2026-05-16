@@ -287,8 +287,8 @@ export class AnalysisService {
       ? '[Bài đăng chỉ có hình ảnh, không có văn bản]'
       : content;
 
-    return `Trump vừa post 1 post trên Truth Social: ${contentSection}
-Hãy đánh giá tỉ lệ % khả năng tác động giá BTC của bài viết trên, và tác động tăng hay giảm.
+    return `Tổng thống Trump vừa post 1 post trên Truth Social với nội dung: ${contentSection}
+Bạn là 1 chuyên gia tài chính có kinh nghiệm nhiều năm trong thị trường crypto, hãy đánh giá tỉ lệ % khả năng tác động giá BTC của bài viết trên, và tác động tăng hay giảm.
 
 Trả về ONLY valid JSON:
 {
