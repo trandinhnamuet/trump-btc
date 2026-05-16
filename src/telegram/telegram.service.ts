@@ -539,68 +539,74 @@ export class TelegramService implements OnModuleInit {
     // Handle /model-list command — prints a tidy monospace table
     this.bot.onText(/^\/model-list(?:@[\w_]+)?(?:\s+(\S+))?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
-      const text = String(msg.text || '').trim();
-      const parts = text.split(/\s+/);
-      const arg = parts[1] ? parts[1].toLowerCase() : '';
+      try {
+        this.logger.log(`/model-list requested by ${msg.chat.first_name || chatId}`);
 
-      const list = this.analysisService.getAvailableModels();
-      const current = this.analysisService.getCurrentModel();
+        const text = String(msg.text || '').trim();
+        const parts = text.split(/\s+/);
+        const arg = parts[1] ? parts[1].toLowerCase() : '';
 
-      // Build columns with fixed widths for a clean monospace table
-      const nameWidth = Math.min(40, Math.max(...list.map(m => m.name.length), 10));
-      const nowWidth = 6;
-      const priceWidth = 16;
+        const list = this.analysisService.getAvailableModels();
+        const current = this.analysisService.getCurrentModel();
 
-      const padRight = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
-      const padLeft = (s: string, w: number) => ' '.repeat(Math.max(0, w - s.length)) + s;
+        // Build columns with fixed widths for a clean monospace table
+        const nameWidth = Math.min(40, Math.max(...list.map(m => m.name.length), 10));
+        const nowWidth = 6;
+        const priceWidth = 16;
 
-      const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
-      const divider = '-'.repeat(header.length);
+        const padRight = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
+        const padLeft = (s: string, w: number) => ' '.repeat(Math.max(0, w - s.length)) + s;
 
-      const rows = list.map(m => {
-        const mark = m.name === current ? '✓' : '';
-        const inStr = m.inputPrice != null ? `$${m.inputPrice}/1M` : '-';
-        const outStr = m.outputPrice != null ? `$${m.outputPrice}/1M` : '-';
-        return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
-      });
+        const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
+        const divider = '-'.repeat(header.length);
 
-      const table = [header, divider, ...rows].join('\n');
+        const rows = list.map(m => {
+          const mark = m.name === current ? '✓' : '';
+          const inStr = m.inputPrice != null ? `$${m.inputPrice}/1M` : '-';
+          const outStr = m.outputPrice != null ? `$${m.outputPrice}/1M` : '-';
+          return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
+        });
 
-      // If user asked for CSV (future option), we can implement sending a CSV file — placeholder for now
-      if (arg === 'csv') {
-        const csvLines = [ ['Model','Now','Input','Output'].join(','), ...list.map(m => [
-          `"${m.name}"`, m.name === current ? 'yes' : 'no', m.inputPrice ?? '', m.outputPrice ?? ''
-        ].join(',')) ];
-        const csv = csvLines.join('\n');
-        // For now, fallback to sending CSV contents as a preformatted message (file send can be added later)
-        const csvMsg = '📥 CSV export (preview):\n\n' + csv;
-        if (csvMsg.length > 3800) {
-          await this.sendPromptInParts(chatId, csv, '📥 <b>CSV export (preview):</b>\n\n');
-        } else {
-          await this.bot?.sendMessage(chatId, `<pre>${this.escapeHtml(csv)}</pre>`, { parse_mode: 'HTML' });
+        const table = [header, divider, ...rows].join('\n');
+
+        // If user asked for CSV (future option), send CSV preview
+        if (arg === 'csv') {
+          const csvLines = [ ['Model','Now','Input','Output'].join(','), ...list.map(m => [
+            `"${m.name}"`, m.name === current ? 'yes' : 'no', m.inputPrice ?? '', m.outputPrice ?? ''
+          ].join(',')) ];
+          const csv = csvLines.join('\n');
+          if (csv.length > 3800) {
+            await this.sendPromptInParts(chatId, csv, '📥 <b>CSV export (preview):</b>\n\n');
+          } else {
+            await this.bot?.sendMessage(chatId, `<pre>${this.escapeHtml(csv)}</pre>`, { parse_mode: 'HTML' });
+          }
+          return;
         }
-        return;
-      }
 
-      // Send table in <pre> blocks; chunk if message too long for Telegram
-      const maxLen = 4000;
-      const linesArr = table.split('\n');
-      const partsToSend: string[] = [];
-      let cur = '';
-      for (const line of linesArr) {
-        if ((cur + line + '\n').length > maxLen) {
-          if (cur) partsToSend.push(cur);
-          cur = line + '\n';
-        } else {
-          cur += line + '\n';
+        // Send table in <pre> blocks; chunk if message too long for Telegram
+        const maxLen = 4000;
+        const linesArr = table.split('\n');
+        const partsToSend: string[] = [];
+        let cur = '';
+        for (const line of linesArr) {
+          if ((cur + line + '\n').length > maxLen) {
+            if (cur) partsToSend.push(cur);
+            cur = line + '\n';
+          } else {
+            cur += line + '\n';
+          }
         }
-      }
-      if (cur) partsToSend.push(cur);
+        if (cur) partsToSend.push(cur);
 
-      for (let i = 0; i < partsToSend.length; i++) {
-        const headerText = i === 0 ? '📋 <b>DANH SÁCH MODEL:</b>\n\n' : '';
-        const footer = i === partsToSend.length - 1 ? '\n\nDùng /model <tên> để đổi.' : '';
-        await this.bot?.sendMessage(chatId, `${headerText}<pre>${this.escapeHtml(partsToSend[i])}</pre>${footer}`, { parse_mode: 'HTML' });
+        for (let i = 0; i < partsToSend.length; i++) {
+          const headerText = i === 0 ? '📋 <b>DANH SÁCH MODEL:</b>\n\n' : '';
+          const footer = i === partsToSend.length - 1 ? '\n\nDùng /model <tên> để đổi.' : '';
+          await this.bot?.sendMessage(chatId, `${headerText}<pre>${this.escapeHtml(partsToSend[i])}</pre>${footer}`, { parse_mode: 'HTML' });
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`❌ Lỗi /model-list: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi khi lấy danh sách model: ${this.escapeHtml(errMsg)}`, { parse_mode: 'HTML' });
       }
     });
 
