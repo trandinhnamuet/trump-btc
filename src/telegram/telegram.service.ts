@@ -544,40 +544,52 @@ export class TelegramService implements OnModuleInit {
 
       const formatPrice = (v: number | null | undefined): string => {
         if (v == null) return '-';
-        const s = v >= 1 ? v.toFixed(4) : v.toFixed(6);
-        return s.replace(/\.0+$/,'').replace(/(\.[0-9]*?)0+$/,'$1');
+        if (Math.abs(v) >= 1) return Number(v).toFixed(2).replace(/\.00$/,'');
+        return Number(v).toPrecision(3).replace(/(?:\.0+|0+)$/,'');
       };
 
-      const rows = list.map(m => ({
-        name: m.name,
-        input: formatPrice(m.inputPrice as any),
-        output: formatPrice(m.outputPrice as any),
-        state: m.name === current ? 'Đang dùng' : '',
-      }));
+      const groupFor = (name: string) => {
+        const n = (name || '').toLowerCase();
+        if (n.startsWith('gpt-5') || n.startsWith('gpt5')) return 'GPT-5 family';
+        if (n.startsWith('gpt-4') || n.startsWith('gpt4')) return 'GPT-4 family';
+        if (n.includes('realtime')) return 'Realtime';
+        if (n.includes('image')) return 'Image';
+        if (n.includes('whisper') || n.includes('transl') || n.includes('speech')) return 'Speech/Realtime';
+        if (n.includes('gpt-4o') || n.includes('gpt4o')) return 'gpt-4o';
+        if (n.startsWith('gpt-') || n.startsWith('gpt')) return 'Other GPT';
+        return 'Other';
+      };
 
-      const H_MODEL = 'Model';
-      const H_INPUT = 'Input($/1M)';
-      const H_OUTPUT = 'Output($/1M)';
-      const H_STATE = 'Trạng thái';
+      // Group models
+      const groups: Record<string, Array<any>> = {};
+      for (const m of list) {
+        const g = groupFor(m.name || '');
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(m);
+      }
 
-      const modelW = Math.max(...rows.map(r => r.name.length), H_MODEL.length);
-      const inputW = Math.max(...rows.map(r => r.input.length), H_INPUT.length);
-      const outputW = Math.max(...rows.map(r => r.output.length), H_OUTPUT.length);
-      const stateW = Math.max(...rows.map(r => r.state.length), H_STATE.length);
+      const order = ['GPT-5 family', 'GPT-4 family', 'Realtime', 'Speech/Realtime', 'Image', 'gpt-4o', 'Other GPT', 'Other'];
 
-      const pad = (s: string, len: number, left = false) => (left ? s.padStart(len) : s.padEnd(len));
+      const lines: string[] = [];
+      for (const key of order) {
+        const items = groups[key];
+        if (!items || items.length === 0) continue;
+        lines.push(`<b>${this.escapeHtml(key)}</b>`);
+        for (const m of items) {
+          const name = this.escapeHtml(m.name || '');
+          const inP = formatPrice(m.inputPrice as any);
+          const outP = formatPrice(m.outputPrice as any);
+          const badge = m.name === current ? ' ✅' : '';
+          lines.push(`• <code>${name}</code>: Input $${inP} | Output $${outP}${badge}`);
+        }
+        lines.push('');
+      }
 
-      const headerRow = `${pad(H_MODEL, modelW)}  ${pad(H_INPUT, inputW, true)}  ${pad(H_OUTPUT, outputW, true)}  ${pad(H_STATE, stateW)}`;
-      const sepRow = `${'-'.repeat(modelW)}  ${'-'.repeat(inputW)}  ${'-'.repeat(outputW)}  ${'-'.repeat(stateW)}`;
-      const dataRows = rows.map(r => `${pad(r.name, modelW)}  ${pad(r.input, inputW, true)}  ${pad(r.output, outputW, true)}  ${pad(r.state, stateW)}`);
-
-      const table = [headerRow, sepRow, ...dataRows].join('\n');
-
-      // If too long, send in parts using existing helper; else send as <pre> for monospace
-      if (table.length > 3800) {
-        await this.sendPromptInParts(chatId, table, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
+      const body = lines.join('\n');
+      if (body.length > 3800) {
+        await this.sendPromptInParts(chatId, body, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
       } else {
-        const msgText = `📋 <b>DANH SÁCH MODEL:</b>\n\n<pre>${this.escapeHtml(table)}</pre>\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`;
+        const msgText = `📋 <b>DANH SÁCH MODEL:</b>\n\n${body}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`;
         await this.bot?.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
       }
     });
