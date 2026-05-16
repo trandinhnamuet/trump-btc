@@ -541,20 +541,44 @@ export class TelegramService implements OnModuleInit {
       const chatId = String(msg.chat.id);
       const list = this.analysisService.getAvailableModels();
       const current = this.analysisService.getCurrentModel();
-      const lines = list.map(m => {
-        const check = m.name === current ? ' ✅ (đang dùng)' : '';
-        return `${m.name}${check} — Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
-      });
 
-      const body = lines.join('\n');
+      const formatPrice = (v: number | null | undefined): string => {
+        if (v == null) return '-';
+        const s = v >= 1 ? v.toFixed(4) : v.toFixed(6);
+        return s.replace(/\.0+$/,'').replace(/(\.[0-9]*?)0+$/,'$1');
+      };
 
-      // If the message is long, send in parts using existing helper
-      const fullMessage = `📋 DANH SÁCH MODEL\n\n${body}\n\nDùng /model <tên> để đổi.`;
-      if (fullMessage.length > 3800) {
-        // sendPromptInParts wraps content in <code> and escapes HTML
-        await this.sendPromptInParts(chatId, body, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
+      const rows = list.map(m => ({
+        name: m.name,
+        input: formatPrice(m.inputPrice as any),
+        output: formatPrice(m.outputPrice as any),
+        state: m.name === current ? 'Đang dùng' : '',
+      }));
+
+      const H_MODEL = 'Model';
+      const H_INPUT = 'Input($/1M)';
+      const H_OUTPUT = 'Output($/1M)';
+      const H_STATE = 'Trạng thái';
+
+      const modelW = Math.max(...rows.map(r => r.name.length), H_MODEL.length);
+      const inputW = Math.max(...rows.map(r => r.input.length), H_INPUT.length);
+      const outputW = Math.max(...rows.map(r => r.output.length), H_OUTPUT.length);
+      const stateW = Math.max(...rows.map(r => r.state.length), H_STATE.length);
+
+      const pad = (s: string, len: number, left = false) => (left ? s.padStart(len) : s.padEnd(len));
+
+      const headerRow = `${pad(H_MODEL, modelW)}  ${pad(H_INPUT, inputW, true)}  ${pad(H_OUTPUT, outputW, true)}  ${pad(H_STATE, stateW)}`;
+      const sepRow = `${'-'.repeat(modelW)}  ${'-'.repeat(inputW)}  ${'-'.repeat(outputW)}  ${'-'.repeat(stateW)}`;
+      const dataRows = rows.map(r => `${pad(r.name, modelW)}  ${pad(r.input, inputW, true)}  ${pad(r.output, outputW, true)}  ${pad(r.state, stateW)}`);
+
+      const table = [headerRow, sepRow, ...dataRows].join('\n');
+
+      // If too long, send in parts using existing helper; else send as <pre> for monospace
+      if (table.length > 3800) {
+        await this.sendPromptInParts(chatId, table, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
       } else {
-        await this.bot?.sendMessage(chatId, fullMessage, { parse_mode: 'HTML' });
+        const msgText = `📋 <b>DANH SÁCH MODEL:</b>\n\n<pre>${this.escapeHtml(table)}</pre>\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`;
+        await this.bot?.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
       }
     });
 
