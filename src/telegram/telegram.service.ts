@@ -536,61 +536,71 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /model-list command — alias for /model list
-    this.bot.onText(/^\/model-list(?:@[\w_]+)?$/i, async (msg: any) => {
+    // Handle /model-list command — prints a tidy monospace table
+    this.bot.onText(/^\/model-list(?:@[\w_]+)?(?:\s+(\S+))?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
+      const text = String(msg.text || '').trim();
+      const parts = text.split(/\s+/);
+      const arg = parts[1] ? parts[1].toLowerCase() : '';
+
       const list = this.analysisService.getAvailableModels();
       const current = this.analysisService.getCurrentModel();
 
-      const formatPrice = (v: number | null | undefined): string => {
-        if (v == null) return '-';
-        if (Math.abs(v) >= 1) return Number(v).toFixed(2).replace(/\.00$/,'');
-        return Number(v).toPrecision(3).replace(/(?:\.0+|0+)$/,'');
-      };
+      // Build columns with fixed widths for a clean monospace table
+      const nameWidth = Math.min(40, Math.max(...list.map(m => m.name.length), 10));
+      const nowWidth = 6;
+      const priceWidth = 16;
 
-      const groupFor = (name: string) => {
-        const n = (name || '').toLowerCase();
-        if (n.startsWith('gpt-5') || n.startsWith('gpt5')) return 'GPT-5 family';
-        if (n.startsWith('gpt-4') || n.startsWith('gpt4')) return 'GPT-4 family';
-        if (n.includes('realtime')) return 'Realtime';
-        if (n.includes('image')) return 'Image';
-        if (n.includes('whisper') || n.includes('transl') || n.includes('speech')) return 'Speech/Realtime';
-        if (n.includes('gpt-4o') || n.includes('gpt4o')) return 'gpt-4o';
-        if (n.startsWith('gpt-') || n.startsWith('gpt')) return 'Other GPT';
-        return 'Other';
-      };
+      const padRight = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
+      const padLeft = (s: string, w: number) => ' '.repeat(Math.max(0, w - s.length)) + s;
 
-      // Group models
-      const groups: Record<string, Array<any>> = {};
-      for (const m of list) {
-        const g = groupFor(m.name || '');
-        if (!groups[g]) groups[g] = [];
-        groups[g].push(m);
-      }
+      const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
+      const divider = '-'.repeat(header.length);
 
-      const order = ['GPT-5 family', 'GPT-4 family', 'Realtime', 'Speech/Realtime', 'Image', 'gpt-4o', 'Other GPT', 'Other'];
+      const rows = list.map(m => {
+        const mark = m.name === current ? '✓' : '';
+        const inStr = m.inputPrice != null ? `$${m.inputPrice}/1M` : '-';
+        const outStr = m.outputPrice != null ? `$${m.outputPrice}/1M` : '-';
+        return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
+      });
 
-      const lines: string[] = [];
-      for (const key of order) {
-        const items = groups[key];
-        if (!items || items.length === 0) continue;
-        lines.push(`<b>${this.escapeHtml(key)}</b>`);
-        for (const m of items) {
-          const name = this.escapeHtml(m.name || '');
-          const inP = formatPrice(m.inputPrice as any);
-          const outP = formatPrice(m.outputPrice as any);
-          const badge = m.name === current ? ' ✅' : '';
-          lines.push(`• <code>${name}</code>: Input $${inP} | Output $${outP}${badge}`);
+      const table = [header, divider, ...rows].join('\n');
+
+      // If user asked for CSV (future option), we can implement sending a CSV file — placeholder for now
+      if (arg === 'csv') {
+        const csvLines = [ ['Model','Now','Input','Output'].join(','), ...list.map(m => [
+          `"${m.name}"`, m.name === current ? 'yes' : 'no', m.inputPrice ?? '', m.outputPrice ?? ''
+        ].join(',')) ];
+        const csv = csvLines.join('\n');
+        // For now, fallback to sending CSV contents as a preformatted message (file send can be added later)
+        const csvMsg = '📥 CSV export (preview):\n\n' + csv;
+        if (csvMsg.length > 3800) {
+          await this.sendPromptInParts(chatId, csv, '📥 <b>CSV export (preview):</b>\n\n');
+        } else {
+          await this.bot?.sendMessage(chatId, `<pre>${this.escapeHtml(csv)}</pre>`, { parse_mode: 'HTML' });
         }
-        lines.push('');
+        return;
       }
 
-      const body = lines.join('\n');
-      if (body.length > 3800) {
-        await this.sendPromptInParts(chatId, body, '📋 <b>DANH SÁCH MODEL:</b>\n\n');
-      } else {
-        const msgText = `📋 <b>DANH SÁCH MODEL:</b>\n\n${body}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`;
-        await this.bot?.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
+      // Send table in <pre> blocks; chunk if message too long for Telegram
+      const maxLen = 4000;
+      const linesArr = table.split('\n');
+      const partsToSend: string[] = [];
+      let cur = '';
+      for (const line of linesArr) {
+        if ((cur + line + '\n').length > maxLen) {
+          if (cur) partsToSend.push(cur);
+          cur = line + '\n';
+        } else {
+          cur += line + '\n';
+        }
+      }
+      if (cur) partsToSend.push(cur);
+
+      for (let i = 0; i < partsToSend.length; i++) {
+        const headerText = i === 0 ? '📋 <b>DANH SÁCH MODEL:</b>\n\n' : '';
+        const footer = i === partsToSend.length - 1 ? '\n\nDùng /model <tên> để đổi.' : '';
+        await this.bot?.sendMessage(chatId, `${headerText}<pre>${this.escapeHtml(partsToSend[i])}</pre>${footer}`, { parse_mode: 'HTML' });
       }
     });
 
