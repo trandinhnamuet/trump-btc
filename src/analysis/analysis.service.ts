@@ -1,45 +1,43 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import * as fs from 'fs';
-import * as path from 'path';
 import { AnalysisResult } from '../common/interfaces';
 import { MarketSignalService, MarketContextResult } from '../market-signal/market-signal.service';
 
-/** Thrown when the daily API call limit (100/day) is exceeded. */
+/** Thrown when the daily API call limit is exceeded. */
 export class DailyLimitExceededException extends Error {
   constructor(public readonly count: number, public readonly shouldAlert: boolean) {
-    super(`Đã đạt giới hạn 100 API calls/ngày (lần gọi thứ ${count}). Tạm dừng đến 0:00 ngày mai.`);
+    super(`Đã đạt giới hạn API calls/ngày (lần gọi thứ ${count}). Tạm dừng đến 0:00 ngày mai.`);
     this.name = 'DailyLimitExceededException';
   }
 }
 
 /**
- * AnalysisService v4 — OpenAI gpt-4o-mini, market-aware, rate-limited.
+ * AnalysisService v5 — OpenRouter (free models), market-aware, rate-limited.
  *
- * - Model: gpt-4o-mini ($0.15/1M input, $0.60/1M output)
- * - Vision: multimodal inline (gpt-4o-mini hỗ trợ ảnh — 1 call duy nhất/post)
- * - Rate limit: tối đa 100 API calls/ngày, reset lúc 0:00 theo giờ server
- * - Logging: đầy đủ call count, tokens ước lượng, lỗi chi tiết
+ * - Provider: OpenRouter (https://openrouter.ai)
+ * - Model mặc định: meta-llama/llama-3.3-70b-instruct:free (miễn phí)
+ * - Vision: không hỗ trợ với free models → bỏ qua mediaUrls
+ * - Rate limit: tối đa 500 API calls/ngày (phòng ngừa), reset lúc 0:00
+ * - Logging: đầy đủ call count, lỗi chi tiết
  */
 @Injectable()
 export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
-  private readonly openaiApiKey: string;
-  private readonly openaiApiUrl = 'https://api.openai.com/v1/chat/completions';
-  private currentModel = 'gpt-4o-mini';
-  private readonly DAILY_LIMIT = 100;
+  private readonly openrouterApiKey: string;
+  private readonly openrouterApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  private currentModel = 'meta-llama/llama-3.3-70b-instruct:free';
+  private readonly DAILY_LIMIT = 500;
 
-  // Static fallback list (used if scripts/models.json is not available)
+  // Static model list for OpenRouter free models
   static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number }> = [
-    { name: 'gpt-3.5-turbo', inputPrice: 2, outputPrice: 2 },
-    { name: 'gpt-3.5-turbo-16k', inputPrice: 3, outputPrice: 3 },
-    { name: 'gpt-4', inputPrice: 15, outputPrice: 45 },
-    { name: 'gpt-4.1', inputPrice: 10, outputPrice: 30 },
-    { name: 'gpt-4o', inputPrice: 5, outputPrice: 15 },
-    { name: 'gpt-4o-mini', inputPrice: 0.15, outputPrice: 0.60 },
-    { name: 'gpt-4.1-mini', inputPrice: 0.15, outputPrice: 0.60 },
-    { name: 'o4-mini', inputPrice: 0.20, outputPrice: 0.80 },
+    { name: 'meta-llama/llama-3.3-70b-instruct:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'meta-llama/llama-3.1-8b-instruct:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'google/gemma-3-27b-it:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'google/gemma-3-12b-it:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'deepseek/deepseek-r1:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'mistralai/mistral-7b-instruct:free', inputPrice: 0, outputPrice: 0 },
+    { name: 'qwen/qwen3-8b:free', inputPrice: 0, outputPrice: 0 },
   ];
 
   // Daily rate limit state (in-memory, resets on restart or new calendar day)
@@ -51,10 +49,10 @@ export class AnalysisService {
     private readonly configService: ConfigService,
     private readonly marketSignalService: MarketSignalService,
   ) {
-    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
-    if (!apiKey) this.logger.warn('OPENAI_API_KEY chưa được cấu hình trong .env!');
-    this.openaiApiKey = apiKey || '';
-    this.logger.log(`[CONFIG] Model: ${this.currentModel} | Daily limit: ${this.DAILY_LIMIT} calls/day`);
+    const apiKey = this.configService.get<string>('OPENROUTER_API_KEY');
+    if (!apiKey) this.logger.warn('OPENROUTER_API_KEY chưa được cấu hình trong .env!');
+    this.openrouterApiKey = apiKey || '';
+    this.logger.log(`[CONFIG] Provider: OpenRouter | Model: ${this.currentModel} | Daily limit: ${this.DAILY_LIMIT} calls/day`);
   }
 
   /** Kiểm tra xem content có phải là URL thuần hoặc RT+URL không có text thực */
@@ -113,88 +111,8 @@ export class AnalysisService {
     return this.currentModel;
   }
 
-  /** Estimate prices (per 1M tokens) for a model id using simple heuristics */
-  private estimatePrices(modelId: string): { inputPrice: number; outputPrice: number } {
-    const id = (modelId || '').toLowerCase();
-    const isMini = id.includes('mini') || id.includes('nano');
-    const miniFactor = isMini ? 0.1 : 1;
-    if (id.startsWith('gpt-5')) return { inputPrice: 25 * miniFactor, outputPrice: 75 * miniFactor };
-    if (id.startsWith('gpt-4.1')) return { inputPrice: 10 * miniFactor, outputPrice: 30 * miniFactor };
-    if (id.startsWith('gpt-4o')) return { inputPrice: 5 * miniFactor, outputPrice: 15 * miniFactor };
-    if (id.startsWith('gpt-4')) return { inputPrice: 15 * miniFactor, outputPrice: 45 * miniFactor };
-    if (id.startsWith('gpt-3.5')) return { inputPrice: 2 * miniFactor, outputPrice: 2 * miniFactor };
-    return { inputPrice: 5 * miniFactor, outputPrice: 15 * miniFactor };
-  }
-
-  /** Trả về danh sách model có thể dùng — đọc từ scripts/models.json nếu có, ngược lại fallback tĩnh */
+  /** Trả về danh sách model có thể dùng (OpenRouter free models) */
   getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number }> {
-    try {
-      const modelsPath = path.join(process.cwd(), 'scripts', 'models.json');
-      const pricingPath = path.join(process.cwd(), 'scripts', 'pricing_puppeteer.json');
-
-      // load pricing map if available
-      let pricingMap: Record<string, { inputPrice: number; outputPrice: number }> = {};
-      if (fs.existsSync(pricingPath)) {
-        try {
-          const rawP = fs.readFileSync(pricingPath, 'utf8');
-          const parsedP = JSON.parse(rawP);
-          const m = parsedP?.map || parsedP?.priceMap || parsedP?.map || null;
-          if (m && typeof m === 'object') {
-            for (const k of Object.keys(m)) {
-              const entry = m[k];
-              if (entry && (entry.inputPrice != null || entry.outputPrice != null)) {
-                pricingMap[k.toLowerCase()] = {
-                  inputPrice: Number(entry.inputPrice || entry.input || 0),
-                  outputPrice: Number(entry.outputPrice || entry.output || entry.outputPrice || 0),
-                };
-              }
-            }
-          }
-        } catch (e) {
-          this.logger.warn(`Không đọc được scripts/pricing_puppeteer.json: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
-
-      if (fs.existsSync(modelsPath)) {
-        const raw = fs.readFileSync(modelsPath, 'utf8');
-        const parsed = JSON.parse(raw);
-        const items = Array.isArray(parsed?.data) ? parsed.data : [];
-        const gptModels = items
-          .filter((m: any) => typeof m.id === 'string' && m.id.toLowerCase().startsWith('gpt-'))
-          .map((m: any) => {
-            const modelId = m.id;
-            const heur = this.estimatePrices(modelId);
-            const normalized = modelId.toLowerCase();
-            const priceOverride = pricingMap[normalized];
-            if (priceOverride) {
-              return { name: modelId, inputPrice: priceOverride.inputPrice, outputPrice: priceOverride.outputPrice };
-            }
-            return { name: modelId, inputPrice: heur.inputPrice, outputPrice: heur.outputPrice };
-          });
-        if (gptModels.length > 0) return gptModels;
-      }
-    } catch (err) {
-      this.logger.warn(`Không đọc được scripts/models.json hoặc pricing file: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    // Fallback: apply pricing overrides to static list if available
-    try {
-      const pricingPath = path.join(process.cwd(), 'scripts', 'pricing_puppeteer.json');
-      if (fs.existsSync(pricingPath)) {
-        const rawP = fs.readFileSync(pricingPath, 'utf8');
-        const parsedP = JSON.parse(rawP);
-        const m = parsedP?.map || parsedP?.priceMap || parsedP?.map || null;
-        if (m && typeof m === 'object') {
-          return AnalysisService.STATIC_MODELS.map(s => {
-            const override = m[s.name] || m[s.name.toUpperCase()] || m[s.name.toLowerCase()];
-            if (override) return { name: s.name, inputPrice: Number(override.inputPrice || override.input || s.inputPrice), outputPrice: Number(override.outputPrice || override.output || s.outputPrice) };
-            return s;
-          });
-        }
-      }
-    } catch {
-      // ignore
-    }
-
     return AnalysisService.STATIC_MODELS;
   }
 
@@ -278,36 +196,21 @@ export class AnalysisService {
   }
 
   /**
-   * Gọi OpenAI gpt-4o-mini. Hỗ trợ multimodal: nếu có ảnh, đưa thẳng vào message
-   * (không cần vision call riêng). 1 API call duy nhất cho cả text lẫn ảnh.
+   * Gọi OpenRouter API (text only — free models không hỗ trợ vision).
    */
   private async callOpenAI(
     content: string,
     mediaUrls: string[] | undefined,
     market: MarketContextResult,
   ): Promise<Omit<AnalysisResult, 'ensembleProbability' | 'severityScore' | 'marketSignalScore' | 'hardRule' | 'matchedRules'>> {
-    const hasImages = mediaUrls && mediaUrls.length > 0;
-    const prompt = this.buildPrompt(content, market, hasImages);
-
-    // Xây dựng user message — multimodal nếu có ảnh
-    let userContent: any;
-    if (hasImages) {
-      userContent = [
-        // Đưa ảnh vào đầu message, detail=low để tiết kiệm token
-        ...mediaUrls.map(url => ({ type: 'image_url', image_url: { url, detail: 'low' } })),
-        { type: 'text', text: prompt },
-      ];
-      this.logger.log(`[API] Gọi ${this.currentModel} với ${mediaUrls.length} ảnh + text (multimodal)`);
-    } else {
-      userContent = prompt;
-      this.logger.log(`[API] Gọi ${this.currentModel} với text only (${content.length} chars)`);
-    }
+    const prompt = this.buildPrompt(content, market, false);
+    this.logger.log(`[API] Gọi ${this.currentModel} via OpenRouter (${content.length} chars)`);
 
     const startMs = Date.now();
     let response: any;
     try {
       response = await axios.post(
-        this.openaiApiUrl,
+        this.openrouterApiUrl,
         {
           model: this.currentModel,
           messages: [
@@ -318,7 +221,7 @@ export class AnalysisService {
                 'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
                 'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
             },
-            { role: 'user', content: userContent },
+            { role: 'user', content: prompt },
           ],
           temperature: 0.3,
           max_tokens: 600,
@@ -326,9 +229,11 @@ export class AnalysisService {
         {
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.openaiApiKey}`,
+            'Authorization': `Bearer ${this.openrouterApiKey}`,
+            'HTTP-Referer': 'https://github.com/trump-btc',
+            'X-Title': 'Trump BTC Signal Bot',
           },
-          timeout: 30000,
+          timeout: 60000,
         },
       );
     } catch (err: any) {
@@ -336,7 +241,7 @@ export class AnalysisService {
       const body = JSON.stringify(err?.response?.data ?? {}).substring(0, 300);
       const errMsg = err instanceof Error ? err.message : String(err);
       this.logger.error(
-        `[API ERROR] OpenAI call thất bại | status=${status ?? 'N/A'} | ` +
+        `[API ERROR] OpenRouter call thất bại | status=${status ?? 'N/A'} | ` +
         `model=${this.currentModel} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
         `error=${errMsg} | response_body=${body}`,
       );
@@ -399,58 +304,37 @@ Trả về ONLY valid JSON:
   }
 
   /**
-   * Kiểm tra credit/quota OpenAI còn lại.
-   * OpenAI không có public billing endpoint — chỉ verify key hợp lệ và trả về daily call stats.
+   * Kiểm tra trạng thái OpenRouter API key.
    */
   public async getRemainingCredits(): Promise<string> {
-    if (!this.openaiApiKey) {
-      return 'OPENAI_API_KEY chưa được cấu hình. Thêm vào .env và restart app.';
+    if (!this.openrouterApiKey) {
+      return 'OPENROUTER_API_KEY chưa được cấu hình. Thêm vào .env và restart app.';
     }
 
     const stats = this.getDailyCallStats();
     const statsStr = `Daily calls hôm nay (${stats.date}): ${stats.count}/${stats.limit}`;
 
     try {
-      // Thử lấy billing từ OpenAI Usage API
-      const billingCandidates = [
-        'https://api.openai.com/v1/dashboard/billing/credit_grants',
-        'https://api.openai.com/v1/dashboard/billing/subscription',
-      ];
-      for (const url of billingCandidates) {
-        try {
-          const resp = await axios.get(url, {
-            headers: { Authorization: `Bearer ${this.openaiApiKey}` },
-            timeout: 7000,
-          });
-          const d = resp.data;
-          if (d?.total_available != null) {
-            return `OpenAI credit còn lại: $${Number(d.total_available).toFixed(4)} | ${statsStr}`;
-          }
-          if (d?.hard_limit_usd != null) {
-            return `OpenAI quota: hard_limit=$${d.hard_limit_usd}, soft_limit=$${d.soft_limit_usd ?? 'N/A'} | ${statsStr}`;
-          }
-        } catch {
-          continue;
-        }
-      }
-
-      // Fallback: verify key bằng cách gọi /v1/models
-      const resp = await axios.get('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${this.openaiApiKey}` },
+      // Verify key qua OpenRouter /auth/key endpoint
+      const resp = await axios.get('https://openrouter.ai/api/v1/auth/key', {
+        headers: { Authorization: `Bearer ${this.openrouterApiKey}` },
         timeout: 7000,
       });
-      if (resp.status === 200) {
-        return `OpenAI API key hợp lệ ✅ | Model: ${this.currentModel} | ${statsStr} | Xem billing tại: platform.openai.com/usage`;
+      const d = resp.data?.data;
+      if (d) {
+        const credits = d.usage != null ? `Credit đã dùng: $${Number(d.usage).toFixed(4)}` : '';
+        return `OpenRouter key hợp lệ ✅ | Model: ${this.currentModel} | ${statsStr}${credits ? ' | ' + credits : ''}`;
       }
     } catch (err: any) {
       const status = err?.response?.status;
-      if (status === 401) return `OpenAI API key không hợp lệ (HTTP 401) | ${statsStr}`;
-      if (status === 429) return `OpenAI rate limit / quota hết (HTTP 429) | ${statsStr}`;
-      return `Lỗi kiểm tra OpenAI key: ${err instanceof Error ? err.message : String(err)} | ${statsStr}`;
+      if (status === 401) return `OpenRouter API key không hợp lệ (HTTP 401) | ${statsStr}`;
+      return `Lỗi kiểm tra OpenRouter key: ${err instanceof Error ? err.message : String(err)} | ${statsStr}`;
     }
 
-    return `OpenAI key OK | Model: ${this.currentModel} | ${statsStr} | Billing: platform.openai.com/usage`;
+    return `OpenRouter key OK | Model: ${this.currentModel} | ${statsStr}`;
   }
+
+  /**
 
   /**
    * Trả về template prompt hiện tại để người dùng xem cấu trúc
