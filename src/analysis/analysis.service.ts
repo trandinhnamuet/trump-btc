@@ -26,11 +26,12 @@ export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
   private readonly openrouterApiKey: string;
   private readonly openrouterApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-  private currentModel = 'meta-llama/llama-3.3-70b-instruct:free';
+  private currentModel = 'nvidia/nemotron-3-ultra-550b-a55b:free';
   private readonly DAILY_LIMIT = 500;
 
   // Static model list for OpenRouter free models
   static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number }> = [
+    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free', inputPrice: 0, outputPrice: 0 },
     { name: 'meta-llama/llama-3.3-70b-instruct:free', inputPrice: 0, outputPrice: 0 },
     { name: 'meta-llama/llama-3.1-8b-instruct:free', inputPrice: 0, outputPrice: 0 },
     { name: 'google/gemma-3-27b-it:free', inputPrice: 0, outputPrice: 0 },
@@ -245,6 +246,12 @@ export class AnalysisService {
         `model=${this.currentModel} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
         `error=${errMsg} | response_body=${body}`,
       );
+      // 429 = rate limit của OpenRouter free tier → hoàn trả count (không phải call thực sự)
+      // và re-throw để PollingService backoff/dừng backfill
+      if (status === 429) {
+        this.dailyCallCount = Math.max(0, this.dailyCallCount - 1);
+        this.logger.warn(`[RATE LIMIT] OpenRouter 429 — hoàn trả dailyCallCount về ${this.dailyCallCount}`);
+      }
       throw err;
     }
 

@@ -135,6 +135,12 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
           break; // Dừng backfill loop ngay
         }
         const errMsg = err instanceof Error ? err.message : String(err);
+        // 429 = OpenRouter rate limit → dừng backfill, thử lại sau
+        const is429 = errMsg.includes('status code 429') || (err as any)?.response?.status === 429;
+        if (is429) {
+          this.logger.warn(`[BACKFILL] OpenRouter 429 rate limit — dừng backfill, sẽ thử lại sau khi restart.`);
+          break;
+        }
         this.logger.error(`Backfill lỗi bài ${post.id}: ${errMsg}`);
         // Lỗi 400 (invalid_image_url, nội dung bị từ chối...) là lỗi vĩnh viễn
         // Đánh dấu đã phân tích để tránh retry vô hạn mỗi lần restart
