@@ -464,8 +464,8 @@ Trả về ONLY valid JSON:
     const market = await this.marketSignalService.getMarketContext();
 
     const results: Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> = [];
-    const BATCH = 5;
-    const DELAY_MS = 1500;
+    const BATCH = 4;
+    const DELAY_MS = 2000;
 
     for (let i = 0; i < AnalysisService.STATIC_MODELS.length; i += BATCH) {
       const batch = AnalysisService.STATIC_MODELS.slice(i, i + BATCH);
@@ -537,7 +537,7 @@ Trả về ONLY valid JSON:
     } catch (err: any) {
       const status = err?.response?.status;
       if (status === 429 && !isRetry) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, 8000));
         return this.callSingleModel(content, modelName, market, true);
       }
       return { probability: 0, direction: 'neutral', error: status ? `HTTP ${status}` : 'timeout' };
@@ -546,30 +546,38 @@ Trả về ONLY valid JSON:
 
   /**
    * Trích xuất JSON từ response text của model.
-   * Xử lý: markdown fences, <think> blocks (reasoning models), JSON embedded trong text.
+   * Xử lý: <think> blocks, markdown fences, trailing text sau JSON (brace matching).
    */
   private extractJson(raw: string): any | null {
     // Xóa think blocks (deepseek-r1, nemotron reasoning, v.v.)
-    let cleaned = raw
+    let text = raw
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
-      .replace(/^```json\s*/im, '')
-      .replace(/^```\s*/im, '')
-      .replace(/\s*```$/im, '')
+      .replace(/^```json\s*\n?/im, '')
+      .replace(/\n?```\s*$/im, '')
       .trim();
 
-    // Thử parse trực tiếp
-    try { return JSON.parse(cleaned); } catch {}
+    // Thử parse trực tiếp (response sạch)
+    try { return JSON.parse(text); } catch {}
 
-    // Tìm JSON object chứa btcInfluenceProbability
-    const match = cleaned.match(/\{[^{}]*"btcInfluenceProbability"[^{}]*\}/s);
-    if (match) {
-      try { return JSON.parse(match[0]); } catch {}
-    }
-
-    // Tìm JSON object lồng nhau (nested)
-    const deepMatch = cleaned.match(/\{[\s\S]*?"btcInfluenceProbability"[\s\S]*?\}/);
-    if (deepMatch) {
-      try { return JSON.parse(deepMatch[0]); } catch {}
+    // Brace matching: tìm JSON object đầu tiên, xử lý trailing text sau closing }
+    // Ví dụ nemotron trả về: {"summary":"...","btcInfluenceProbability":90,...}\n\nExplanation...
+    const start = text.indexOf('{');
+    if (start !== -1) {
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\' && inString) { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        if (ch === '}' && --depth === 0) {
+          try { return JSON.parse(text.substring(start, i + 1)); } catch {}
+          break;
+        }
+      }
     }
 
     return null;
