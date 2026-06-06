@@ -88,7 +88,34 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     if (unanalyzed.length === 0) return;
 
     this.logger.log(`🔄 Backfill: tìm thấy ${unanalyzed.length} bài chưa được phân tích, đang xử lý lại...`);
+    const EXPIRY_MS = 60 * 60 * 1000; // 1 giờ
+    const now = Date.now();
+
     for (const record of unanalyzed) {
+      // Bỏ qua nếu bài đã quá 1 giờ trong hàng chờ (tính theo fetchedAt)
+      const fetchedAt = record.fetchedAt ? new Date(record.fetchedAt).getTime() : 0;
+      const ageMs = now - fetchedAt;
+      if (fetchedAt > 0 && ageMs > EXPIRY_MS) {
+        const ageMinutes = Math.round(ageMs / 60_000);
+        this.storageService.addSkippedExpiredPost({
+          postId: record.id,
+          content: record.content.substring(0, 150),
+          fetchedAt: record.fetchedAt,
+          skippedAt: new Date().toISOString(),
+          ageMinutes,
+          url: record.url,
+        });
+        // Đánh dấu đã xử lý để không retry vô hạn
+        this.storageService.updatePost(record.id, {
+          btcInfluenceProbability: 0,
+          ensembleProbability: 0,
+          btcDirection: 'neutral',
+          summary: `Bỏ qua: bài đã ${ageMinutes} phút trong hàng chờ (>60 phút).`,
+          reasoning: `Skipped by expiry check — fetchedAt=${record.fetchedAt}`,
+        });
+        continue;
+      }
+
       const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url, mediaUrls: record.mediaUrls };
       try {
         const btcPrice = record.btcPriceAtPost ?? null;

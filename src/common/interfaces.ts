@@ -17,6 +17,7 @@ export interface AnalysisResult {
   btcInfluenceProbability: number; // 0-100 (raw model output)
   btcDirection: 'increase' | 'decrease' | 'neutral'; // Hướng ảnh hưởng
   reasoning: string; // Lý do
+  modelUsed?: string; // Model đã thực sự xử lý request này
 
   // Ensemble scoring
   ensembleProbability: number;  // 0-100 (sau khi kết hợp model + severity + market)
@@ -72,6 +73,16 @@ export interface PostRecord {
   checkAt1h?: string;
   checkAt1d?: string;
   checkAt7d?: string;
+}
+
+/** Bài viết bị bỏ qua vì đã quá 1 giờ trong hàng chờ phân tích */
+export interface SkippedAnalysisRecord {
+  postId: string;
+  content: string;       // 150 ký tự đầu
+  fetchedAt: string;     // Thời điểm bài được lưu vào storage
+  skippedAt: string;     // Thời điểm bị bỏ qua
+  ageMinutes: number;    // Tuổi bài tính bằng phút tại lúc bị bỏ qua
+  url: string;
 }
 
 /** Cấu trúc file data/posts.json */

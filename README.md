@@ -1,181 +1,191 @@
-# Trump Bitcoin Impact Analyzer
+# Trump BTC Signal Bot
 
-Ứng dụng NestJS theo dõi bài viết của Trump trên Truth Social, phân tích tác động tiềm năng đến giá Bitcoin bằng OpenAI, và gửi thông báo Telegram alert khi phát hiện bài viết có ảnh hưởng cao.
+Bot NestJS theo dõi bài viết của Trump trên Truth Social theo thời gian thực, dùng AI (OpenRouter free models) phân tích xác suất ảnh hưởng đến giá Bitcoin, và gửi thông báo qua Telegram.
 
-## Cấu hình
+---
 
-### 1. Chuẩn bị file .env
+## Cách hoạt động
+
+```
+Truth Social (mỗi 90-120 giây)
+      ↓ fetch-posts.py — browser impersonation (curl_cffi)
+PollingService
+      ├── AnalysisService   → OpenRouter LLM phân tích nội dung
+      ├── MarketSignalService → Binance: bối cảnh thị trường BTC
+      ├── BtcPriceService   → Binance / CoinGecko: giá BTC hiện tại
+      ├── StorageService    → data/posts.json (không dùng database)
+      └── TelegramService   → Gửi alert + nhận lệnh từ users
+```
+
+### Luồng xử lý bài viết mới
+
+1. Scraper phát hiện bài mới → lấy giá BTC → lưu vào storage
+2. Gọi OpenRouter LLM → nhận `btcInfluenceProbability` (0–100%) + `btcDirection`
+3. `< 10%` → gửi Telegram **silent** (không âm thanh)  
+   `≥ 10%` → gửi Telegram **alert** (có âm thanh)
+4. Mỗi user có thể đặt ngưỡng cá nhân bằng lệnh `/thr`
+
+### Theo dõi độ chính xác (cron mỗi 1 phút)
+
+Sau mỗi bài viết, bot tự động ghi lại giá BTC tại 3 mốc:
+- **+1 giờ** sau khi Trump đăng
+- **+1 ngày** sau khi Trump đăng
+- **+7 ngày** sau khi Trump đăng
+
+Sau 7 ngày, bot log so sánh dự đoán vs thực tế để đánh giá độ chính xác.
+
+---
+
+## Cài đặt
+
+### Yêu cầu
+
+- Node.js 18+
+- Python 3.10+ với `curl_cffi`: `pip install curl_cffi`
+- PM2 (production): `npm install -g pm2`
+
+### 1. Cài dependencies
+
+```bash
+npm install
+```
+
+### 2. Cấu hình `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Điền các giá trị vào `.env`:
+Điền các giá trị:
 
-#### OpenAI API
-```
-OPENAI_API_KEY=sk-...
-```
-Lấy tại https://platform.openai.com/api-keys
+```env
+# OpenRouter — lấy API key tại https://openrouter.ai/keys (miễn phí)
+OPENROUTER_API_KEY=sk-or-v1-...
 
-#### Telegram Bot
-```
+# Telegram bot token — tạo qua @BotFather
 TELEGRAM_BOT_TOKEN=123456789:AAF...
-```
-Tạo bot qua [@BotFather](https://t.me/BotFather) trên Telegram
 
-#### Truth Social Authentication
-**CÁCH 1 - Tự động login (khuyến nghị):**
-```
+# Ngưỡng alert toàn cục (0 = gửi tất cả, 90 = chỉ gửi khi >= 90%)
+BTC_INFLUENCE_THRESHOLD=0
+
+# Truth Social — dùng để scrape (không cần token nếu curl_cffi hoạt động)
+# TRUTH_SOCIAL_ACCESS_TOKEN=...   (tuỳ chọn)
 TRUTHSOCIAL_USERNAME=your_username
 TRUTHSOCIAL_PASSWORD=your_password
 ```
-App sẽ tự động lấy access token qua OAuth.
 
-**CÁCH 2 - Manual token (dự phòng):**
-Nếu cách 1 không hoạt động, lấy token thủ công:
-1. Đăng nhập Truth Social trên trình duyệt
-2. Mở DevTools → Network tab
-3. Tìm request có header `Authorization: Bearer ...`
-4. Copy token và thêm vào `.env`:
-```
-TRUTH_SOCIAL_ACCESS_TOKEN=...
-```
+### 3. Đăng ký nhận alert
 
-#### Ngưỡng Alert (tùy chọn)
-```
-BTC_INFLUENCE_THRESHOLD=90  # Phần trăm, mặc định 90%
-```
+Sau khi bot chạy, nhắn tin `/start` cho bot trên Telegram — bot sẽ tự động thêm bạn vào danh sách nhận alert. Không cần sửa file `data/users.json` thủ công.
 
-### 2. Cấu hình danh sách Telegram users
-
-Sửa file `data/users.json` để thêm người dùng:
-
-```json
-{
-  "users": [
-    { "chatId": "123456789", "name": "Tên bạn" },
-    { "chatId": "987654321", "name": "Tên người khác" }
-  ]
-}
-```
-
-Để lấy chat ID của bạn:
-- Nhắn tin cho bot [@userinfobot](https://t.me/userinfobot) trên Telegram
-- Bot sẽ return chat ID của bạn
-
-## Cài đặt & Chạy
+### 4. Chạy
 
 ```bash
-# 1. Cài dependencies
-npm install
-
-# 2. Chạy development mode (có auto-reload)
+# Development (có auto-reload)
 npm run start:dev
 
-# 3. Production build
+# Production
 npm run build
-npm run start:prod
+pm2 start ecosystem.config.js
+pm2 logs trump-btc
 ```
 
-## Cách hoạt động
+---
 
-### Flow chính
+## AI & Model
+
+Bot dùng **OpenRouter** với các free model, tự động fallback khi gặp lỗi 429/404.
+
+**Model mặc định:** `openai/gpt-oss-120b:free`
+
+**Fallback queue** (18 models, từ mạnh → yếu):
+
+| # | Model | Vision |
+|---|-------|--------|
+| 1 | `google/gemini-2.5-flash-preview:free` | ✅ |
+| 2 | `qwen/qwen2.5-vl-72b-instruct:free` | ✅ |
+| 3 | `openai/gpt-oss-120b:free` ← *default* | |
+| 4 | `deepseek/deepseek-r1:free` | |
+| 5 | `nvidia/nemotron-3-super-120b-a12b:free` | |
+| … | *(13 models còn lại)* | |
+
+Khi bài viết có ảnh đính kèm, bot tự động chuyển sang vision model.  
+Giới hạn: **500 API calls/ngày**, reset lúc 0:00 (gửi cảnh báo Telegram khi vượt).
+
+---
+
+## Lệnh Telegram Bot
+
+| Lệnh | Chức năng |
+|------|-----------|
+| `/start` | Đăng ký nhận alert tự động |
+| `/btc` | Giá BTC hiện tại |
+| `/check` | 7 bài có xác suất ≥30% gần nhất (kèm link + giá BTC +1h/+1d/+7d) |
+| `/check-all` | Tất cả bài ≥30% |
+| `/check2` | Bảng 10 ngày gần nhất, xác suất ≥30% |
+| `/latest` | Phân tích lại + gửi lại alert bài mới nhất |
+| `/test <nội dung>` | Phân tích thủ công đoạn văn bất kỳ |
+| `/test <postId>` | Phân tích bài Truth Social theo ID hoặc URL |
+| `/prompt` | Xem prompt AI hiện tại |
+| `/prompt <nội dung>` | Xem prompt AI cho bài viết cụ thể |
+| `/model` | Xem model đang dùng |
+| `/model <tên>` | Đổi sang model khác |
+| `/models` | Danh sách model theo thứ tự fallback |
+| `/model-list` | Bảng model đầy đủ (monospace) |
+| `/credit` | Kiểm tra trạng thái OpenRouter API key |
+| `/thr` | Xem ngưỡng thông báo cá nhân |
+| `/thr <số>` | Đặt ngưỡng thông báo (0–100%) |
+| `/clear dd-mm-yyyy` | Xóa bài viết cũ khỏi storage |
+| `/skipped` | Danh sách bài bị bỏ qua do >1h trong hàng chờ |
+| `/menu` | Hiển thị danh sách lệnh này |
+
+---
+
+## Cấu trúc dự án
 
 ```
-Mỗi 30 giây:
-  ├─ Kiểm tra bài viết mới của Trump trên Truth Social
-  ├─ Phân tích bằng OpenAI GPT-4o-mini:
-  │  ├─ Tóm tắt nội dung
-  │  ├─ % khả năng ảnh hưởng BTC (0-100%)
-  │  └─ Hướng tăng/giảm/trung lập
-  ├─ Nếu % >= ngưỡng (mặc định 90%) → Gửi Telegram alert cho tất cả users
-  └─ Lưu bài viết + phân tích vào data/posts.json
-
-Mỗi 1 phút:
-  ├─ Kiểm tra các bài cần cập nhật giá BTC
-  └─ Ghi lại giá tại +1h, +1 ngày, +7 ngày sau khi đăng
-     (để đánh giá độ chính xác của dự đoán)
+trump-btc/
+├── src/
+│   ├── polling/          # Orchestrator chính, cron jobs
+│   ├── truth-social/     # Scraper (gọi fetch-posts.py)
+│   ├── analysis/         # OpenRouter LLM + fallback chain
+│   ├── market-signal/    # Bối cảnh thị trường BTC từ Binance
+│   ├── btc-price/        # Giá BTC (Binance → CoinGecko fallback)
+│   ├── telegram/         # Bot Telegram: alert + commands
+│   ├── severity/         # Rule-based keyword scoring (9 nhóm)
+│   ├── storage/          # Persistence: data/posts.json
+│   └── common/           # TypeScript interfaces dùng chung
+├── fetch-posts.py        # Python scraper Truth Social (curl_cffi)
+├── ecosystem.config.js   # PM2 config
+├── data/
+│   ├── posts.json        # Bài viết + phân tích (auto-generated)
+│   ├── alerts.log        # Lịch sử alert (JSON per line)
+│   ├── users.json        # Danh sách Telegram users (auto-generated)
+│   └── skipped-analysis.json
+└── .env                  # Credentials (không commit)
 ```
 
-### Dữ liệu lưu trữ
-
-- **`data/posts.json`** - Bài viết + phân tích + giá BTC tại các mốc (tự tạo)
-- **`data/alerts.log`** - JSON per-line log của tất cả alerts đã gửi (tự tạo)
-- **`data/users.json`** - Danh sách Telegram users (cần tạo/sửa tay)
-
-## Kiến trúc
-
-```
-src/
-├── common/interfaces.ts        # TypeScript types dùng chung
-├── storage/                    # Lưu dữ liệu vào file JSON local
-├── truth-social/               # Lấy bài viết từ Truth Social API
-├── analysis/                   # Phân tích bằng OpenAI GPT-4o-mini
-├── btc-price/                  # Lấy giá BTC từ Binance API
-├── telegram/                   # Gửi alert Telegram + ghi log alerts
-└── polling/                    # Orchestrator: điều phối cron jobs
-```
-
-## Logs & Output
-
-Khi chạy, bạn sẽ thấy logs chi tiết:
-- Lần đầu chạy: "Lần đầu khởi động. Sẽ watch từ bài tiếp theo"
-- Bài mới: "🆕 Tìm thấy N bài viết mới của Trump!"
-- Phân tích: "Phân tích xong: xác suất ảnh hưởng BTC = X% (TĂNG/GIẢM/TRUNG LẬP)"
-- Alert: "🚨 XÁC SUẤT X% >= 90% → Gửi Telegram alert!"
-- Độ chính xác (sau 7 ngày): "[ĐỘ CHÍNH XÁC] Bài X: Dự đoán=TĂNG (85%), Thực tế=GIẢM (-2%), Kết quả=❌ SAI"
+---
 
 ## Troubleshooting
 
-### Truth Social authentification failed
-Nếu thấy error "Truth Social yêu cầu xác thực":
+### Truth Social trả về 403
 
-1. **Kiểm tra credentials:**
-   ```bash
-   # Test login thủ công bằng curl
-   curl -X POST https://truthsocial.com/oauth/token \
-     -d "client_id=Trump-Analyzer-Client&client_secret=do-not-use-in-production&grant_type=password&username=YOUR_USERNAME&password=YOUR_PASSWORD&scope=read"
-   ```
+Bot dùng `curl_cffi` để giả lập browser — không cần đăng nhập. Nếu vẫn bị block:
 
-2. **Nếu thấy error, thử cách manual token:**
-   - Đăng nhập vào https://truthsocial.com
-   - Mở DevTools (F12) → Network tab
-   - Refres page hoặc cuộn posts
-   - Tìm request `/accounts/.../statuses`
-   - Xem header `Authorization: Bearer ...`
-   - Copy token vào `TRUTH_SOCIAL_ACCESS_TOKEN` trong `.env`
+- Server bị Cloudflare block tạm thời → bot tự backoff (5→10→20→60 phút)
+- Kiểm tra IP server không bị blacklist
+- Thêm `TRUTH_SOCIAL_ACCESS_TOKEN` vào `.env` nếu có token hợp lệ
 
-### OpenAI API mất tin
-- Kiểm tra OPENAI_API_KEY có hợp lệ không: https://platform.openai.com/account/api-keys
-- Kiểm tra quotas: https://platform.openai.com/account/billing/usage
-- Logs sẽ show "Lỗi khi gọi OpenAI API: ..."
+### OpenRouter 429 (rate limit)
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Bot tự động fallback sang model tiếp theo trong queue. Nếu tất cả model đều 429:
+- Kiểm tra `/credit` để xem daily call count
+- Giới hạn mặc định: 500 calls/ngày
+- Free tier OpenRouter có thể bị giới hạn theo giờ — bot sẽ tự retry sau khi restart
 
-## Resources
+### Telegram bot không nhận lệnh
 
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Kiểm tra `TELEGRAM_BOT_TOKEN` hợp lệ
+- Đảm bảo chỉ có 1 instance bot đang chạy (polling conflict)
+- Xem log: `pm2 logs trump-btc | grep -i telegram`

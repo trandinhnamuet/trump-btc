@@ -183,6 +183,91 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // Handle /testall command — test content against all available models in parallel
+    this.bot.onText(/^\/testall(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const input = match?.[1]?.trim();
+
+      if (!input) {
+        await this.bot?.sendMessage(
+          chatId,
+          'ℹ️ Dùng: <code>/testall &lt;nội dung&gt;</code> hoặc <code>/testall &lt;postId&gt;</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      // Nếu là post ID / URL → fetch nội dung từ Truth Social trước
+      const postIdMatch = input.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
+      let content = input;
+      if (postIdMatch) {
+        const postId = postIdMatch[1];
+        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài <code>${postId}</code>...`, { parse_mode: 'HTML' });
+        try {
+          const post = await this.truthSocialService.getPostById(postId);
+          if (!post?.content) {
+            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài <code>${postId}</code>.`, { parse_mode: 'HTML' });
+            return;
+          }
+          content = post.content;
+        } catch (err) {
+          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
+
+      const modelCount = this.analysisService.getAvailableModels().length;
+      const preview = content.length > 120 ? content.substring(0, 117) + '...' : content;
+      const waitMsg = await this.bot?.sendMessage(
+        chatId,
+        `⏳ Đang chạy <b>${modelCount} models</b> song song...\n\n<i>${this.escapeHtml(preview)}</i>`,
+        { parse_mode: 'HTML' },
+      );
+
+      try {
+        const results = await this.analysisService.analyzeWithAllModels(content);
+
+        const sorted = [...results].sort((a, b) => {
+          if (a.error && !b.error) return 1;
+          if (!a.error && b.error) return -1;
+          return b.probability - a.probability;
+        });
+
+        const lines = sorted.map(r => {
+          const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
+          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i>`;
+          const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
+          const icon = r.probability >= 70 ? '🔴' : r.probability >= 40 ? '🟡' : '🟢';
+          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b>`;
+        });
+
+        const ok = results.filter(r => !r.error).length;
+        const err = results.length - ok;
+        const errNote = err > 0 ? ` · <i>${err} lỗi</i>` : '';
+        const reply =
+          `🧪 <b>TEST ALL MODELS</b> (${ok}/${results.length} OK${errNote})\n` +
+          `<i>${this.escapeHtml(preview)}</i>\n\n` +
+          lines.join('\n');
+
+        // Chỉnh sửa tin nhắn chờ thành kết quả
+        if (waitMsg?.message_id) {
+          await this.bot?.editMessageText(reply, {
+            chat_id: chatId,
+            message_id: waitMsg.message_id,
+            parse_mode: 'HTML',
+          });
+        } else {
+          await this.bot?.sendMessage(chatId, reply, { parse_mode: 'HTML' });
+        }
+
+        this.logger.log(`✅ /testall: ${ok}/${results.length} models OK`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`❌ Lỗi /testall: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
     // Handle /thr command — set per-user alert threshold
     this.bot.onText(/^\/thr(?:\s+(\d+))?$/, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
@@ -238,11 +323,14 @@ export class TelegramService implements OnModuleInit {
         `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +
         `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
         `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `🔬 /testall &lt;nội dung&gt; — So sánh kết quả từ tất cả models song song\n` +
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
         `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
         `💳 /credit — Xem số credit OpenAI còn lại\n` +
+        `🗑 /skipped — Danh sách bài bị bỏ qua do quá 1h trong hàng chờ phân tích\n` +
         `🤖 /model — Xem model AI đang dùng\n` +
+        `📋 /models — Danh sách model theo thứ tự ưu tiên (fallback queue)\n` +
         `📋 /model-list — Danh sách model có thể dùng\n` +
         `🔀 /model &lt;tên&gt; — Đổi sang model khác\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
@@ -552,19 +640,21 @@ export class TelegramService implements OnModuleInit {
         // Build columns with fixed widths for a clean monospace table
         const nameWidth = Math.min(40, Math.max(...list.map(m => m.name.length), 10));
         const nowWidth = 6;
+        const visionWidth = 7;
         const priceWidth = 16;
 
         const padRight = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
         const padLeft = (s: string, w: number) => ' '.repeat(Math.max(0, w - s.length)) + s;
 
-        const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
+        const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padRight('Vision', visionWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
         const divider = '-'.repeat(header.length);
 
-        const rows = list.map(m => {
+        const rows = list.map((m: any) => {
           const mark = m.name === current ? '✓' : '';
+          const vis = m.vision ? '📷' : '';
           const inStr = m.inputPrice != null ? `$${m.inputPrice}/1M` : '-';
           const outStr = m.outputPrice != null ? `$${m.outputPrice}/1M` : '-';
-          return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
+          return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padRight(vis, visionWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
         });
 
         const table = [header, divider, ...rows].join('\n');
@@ -625,7 +715,58 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Suppress noisy polling errors (e.g. 404 when token is a placeholder)
+    // Handle /skipped command - show posts skipped due to 1-hour expiry
+    this.bot.onText(/^\/skipped(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const list = this.storageService.getSkippedExpiredPosts();
+        if (list.length === 0) {
+          await this.bot?.sendMessage(chatId, '✅ Chưa có bài nào bị bỏ qua do hết hạn 1 giờ.');
+          return;
+        }
+        const lines = list
+          .slice()
+          .reverse() // mới nhất trước
+          .slice(0, 20) // tối đa 20 bài
+          .map((r, i) => {
+            const skippedTime = new Date(r.skippedAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+            const preview = this.escapeHtml(r.content.substring(0, 80)).replace(/\n/g, ' ');
+            return `${i + 1}. <a href="${r.url}">${r.postId}</a>\n   ⏱ ${r.ageMinutes} phút trong queue | bỏ qua lúc ${skippedTime}\n   <i>${preview}…</i>`;
+          });
+        const header = `🗑 <b>Bài bị bỏ qua do quá 1 giờ (${list.length} tổng, hiển thị ${Math.min(list.length, 20)} mới nhất):</b>\n\n`;
+        await this.bot?.sendMessage(chatId, header + lines.join('\n\n'), {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        });
+        this.logger.log(`✅ /skipped: ${list.length} records sent to ${msg.chat.first_name || chatId}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /skipped: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
+    // Handle /models command - show priority-ordered model list
+    this.bot.onText(/^\/models(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      const list = this.analysisService.getAvailableModels() as Array<{ name: string; vision?: boolean }>;
+      const current = this.analysisService.getCurrentModel();
+      const lines = list.map((m, i) => {
+        const isActive = m.name === current;
+        const vision = m.vision ? ' 📷' : '';
+        const mark = isActive ? ' ✅ <b>(đang dùng)</b>' : '';
+        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${mark}`;
+      });
+      await this.bot?.sendMessage(
+        chatId,
+        `🤖 <b>DANH SÁCH MODEL (thứ tự ưu tiên)</b>\n\n` +
+        `Khi model cao hơn bị lỗi (429/404/empty) → tự động thử model tiếp theo.\n` +
+        `📷 = hỗ trợ phân tích ảnh\n\n` +
+        lines.join('\n'),
+        { parse_mode: 'HTML' },
+      );
+    });
+
     // Without this handler the error event crashes the process.
     (this.bot as any).on('polling_error', (err: Error) => {
       const msg = err.message || String(err);
@@ -922,10 +1063,11 @@ export class TelegramService implements OnModuleInit {
       preview = '[Không có nội dung]';
     }
 
-    // Breakdown line: model / severity / market
+    // Breakdown line: model used / severity / market
     const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
     const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
-    const breakdownLine = `<i>🤖 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
+    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
+    const breakdownLine = `<i>🤖 <code>${modelLabel}</code>\n💡 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
 
     // Hard rule warning
     const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length
@@ -1040,10 +1182,11 @@ ${breakdownLine}${hardRuleLine}
       directionDisplay = '─ TRUNG LẬP';
     }
 
-    // Breakdown line: model / severity / market
+    // Breakdown line: model used / severity / market
     const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
     const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
-    const breakdownLine = `<i>🤖 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
+    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
+    const breakdownLine = `<i>🤖 <code>${modelLabel}</code>\n💡 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
 
     // Hard rule warning
     const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length

@@ -66,3 +66,18 @@ data/posts.json
 
 # Legacy main folder (contains secrets)
 main/
+
+# Project info (contains server credentials and sensitive details)
+PROJECT_INFO.md
+
+# Truth Social OAuth token cache (contains access token)
+.client_cache
+
+# Telegram user list (contains personal Chat IDs - PII)
+data/users.json
+
+# Debug/test output files
+response.json
+
+# TypeScript build info (build artifact)
+tsconfig.build.tsbuildinfo

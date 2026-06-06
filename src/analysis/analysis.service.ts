@@ -26,19 +26,30 @@ export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
   private readonly openrouterApiKey: string;
   private readonly openrouterApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-  private currentModel = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  private currentModel = 'openai/gpt-oss-120b:free';
   private readonly DAILY_LIMIT = 500;
 
-  // Static model list for OpenRouter free models
-  static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number }> = [
-    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'meta-llama/llama-3.3-70b-instruct:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'meta-llama/llama-3.1-8b-instruct:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'google/gemma-3-27b-it:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'google/gemma-3-12b-it:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'deepseek/deepseek-r1:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'mistralai/mistral-7b-instruct:free', inputPrice: 0, outputPrice: 0 },
-    { name: 'qwen/qwen3-8b:free', inputPrice: 0, outputPrice: 0 },
+  // Static model list for OpenRouter free models (ordered by capability: strongest → weakest)
+  // vision: true = model hỗ trợ gửi ảnh (multimodal)
+  static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean }> = [
+    { name: 'google/gemini-2.5-flash-preview:free',        inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'qwen/qwen2.5-vl-72b-instruct:free',           inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'openai/gpt-oss-120b:free',                    inputPrice: 0, outputPrice: 0              },
+    { name: 'deepseek/deepseek-r1:free',                   inputPrice: 0, outputPrice: 0              },
+    { name: 'openrouter/owl-alpha',                        inputPrice: 0, outputPrice: 0              },
+    { name: 'nvidia/nemotron-3-super-120b-a12b:free',      inputPrice: 0, outputPrice: 0              },
+    { name: 'poolside/laguna-m.1:free',                    inputPrice: 0, outputPrice: 0              },
+    { name: 'meta-llama/llama-3.2-11b-vision-instruct:free', inputPrice: 0, outputPrice: 0, vision: true },
+    { name: 'meta-llama/llama-3.3-70b-instruct:free',      inputPrice: 0, outputPrice: 0              },
+    { name: 'google/gemma-3-27b-it:free',                  inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'z-ai/glm-4.5-air:free',                      inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'openai/gpt-oss-20b:free',                     inputPrice: 0, outputPrice: 0              },
+    { name: 'poolside/laguna-xs.2:free',                   inputPrice: 0, outputPrice: 0              },
+    { name: 'qwen/qwen3-8b:free',                          inputPrice: 0, outputPrice: 0              },
+    { name: 'google/gemma-3-12b-it:free',                  inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'meta-llama/llama-3.1-8b-instruct:free',       inputPrice: 0, outputPrice: 0              },
+    { name: 'mistralai/mistral-7b-instruct:free',          inputPrice: 0, outputPrice: 0              },
+    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',      inputPrice: 0, outputPrice: 0              },
   ];
 
   // Daily rate limit state (in-memory, resets on restart or new calendar day)
@@ -112,8 +123,13 @@ export class AnalysisService {
     return this.currentModel;
   }
 
+  /** Kiểm tra model có hỗ trợ vision không */
+  private modelSupportsVision(modelName: string): boolean {
+    return AnalysisService.STATIC_MODELS.find(m => m.name === modelName)?.vision === true;
+  }
+
   /** Trả về danh sách model có thể dùng (OpenRouter free models) */
-  getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number }> {
+  getAvailableModels(): Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean }> {
     return AnalysisService.STATIC_MODELS;
   }
 
@@ -175,8 +191,24 @@ export class AnalysisService {
     const textContent = isUrlOnly ? '' : safeContent;
     const market = await this.marketSignalService.getMarketContext();
 
-    // Gọi OpenAI với multimodal (ảnh + text trong 1 request duy nhất)
-    const modelResult = await this.callOpenAI(textContent, mediaUrls, market);
+    // Nếu có ảnh và model hiện tại không hỗ trợ vision → tạm đổi sang vision model mạnh nhất đầu danh sách
+    let modelOverride: string | null = null;
+    if (hasMedia && !this.modelSupportsVision(this.currentModel)) {
+      const visionModel = AnalysisService.STATIC_MODELS.find(m => m.vision);
+      if (visionModel) {
+        modelOverride = visionModel.name;
+        this.logger.log(`[VISION] Bài có ảnh, chuyển tạm sang ${modelOverride} (vision model)`);
+      }
+    }
+
+    const prevModel = this.currentModel;
+    if (modelOverride) this.currentModel = modelOverride;
+    let modelResult: Omit<AnalysisResult, 'ensembleProbability' | 'severityScore' | 'marketSignalScore' | 'hardRule' | 'matchedRules'>;
+    try {
+      modelResult = await this.callOpenAI(textContent, mediaUrls, market);
+    } finally {
+      if (modelOverride) this.currentModel = prevModel;
+    }
 
     const result: AnalysisResult = {
       ...modelResult,
@@ -185,6 +217,7 @@ export class AnalysisService {
       marketSignalScore: market.marketSignalScore,
       hardRule: false,
       matchedRules: [],
+      modelUsed: modelResult.modelUsed,
     };
 
     this.logger.log(
@@ -197,15 +230,52 @@ export class AnalysisService {
   }
 
   /**
-   * Gọi OpenRouter API (text only — free models không hỗ trợ vision).
+   * Gọi OpenRouter API. Nếu model hỗ trợ vision và có ảnh → gửi ảnh kèm theo.
+   * Tự động fallback sang model tiếp theo nếu gặp 429/404/empty/JSON-error.
    */
   private async callOpenAI(
     content: string,
     mediaUrls: string[] | undefined,
     market: MarketContextResult,
+    failedModels: Set<string> = new Set(),
   ): Promise<Omit<AnalysisResult, 'ensembleProbability' | 'severityScore' | 'marketSignalScore' | 'hardRule' | 'matchedRules'>> {
-    const prompt = this.buildPrompt(content, market, false);
-    this.logger.log(`[API] Gọi ${this.currentModel} via OpenRouter (${content.length} chars)`);
+    failedModels.add(this.currentModel);
+
+    // Helper: thử model tiếp theo chưa bị lỗi
+    // Nếu có ảnh → ưu tiên vision model chưa thử, rồi mới dùng text model
+    const tryFallback = async (reason: string): Promise<Omit<AnalysisResult, 'ensembleProbability' | 'severityScore' | 'marketSignalScore' | 'hardRule' | 'matchedRules'>> => {
+      const hasImages = (mediaUrls?.length ?? 0) > 0;
+      const nextModel = hasImages
+        ? (AnalysisService.STATIC_MODELS.find(m => m.vision && !failedModels.has(m.name)) ??
+           AnalysisService.STATIC_MODELS.find(m => !failedModels.has(m.name)))
+        : AnalysisService.STATIC_MODELS.find(m => !failedModels.has(m.name));
+      if (!nextModel) {
+        this.logger.error(
+          `[FALLBACK] Đã thử tất cả ${failedModels.size}/${AnalysisService.STATIC_MODELS.length} models, ` +
+          `không còn model nào khả dụng. Lý do cuối: ${reason}`,
+        );
+        throw new Error(`Tất cả models đều thất bại. Lý do: ${reason}`);
+      }
+      this.logger.warn(
+        `[FALLBACK] ${reason} → chuyển sang ${nextModel.name} ` +
+        `(đã thử: ${failedModels.size}/${AnalysisService.STATIC_MODELS.length})`,
+      );
+      const prevModel = this.currentModel;
+      this.currentModel = nextModel.name;
+      try {
+        return await this.callOpenAI(content, mediaUrls, market, failedModels);
+      } finally {
+        this.currentModel = prevModel;
+      }
+    };
+
+    const prompt = this.buildPrompt(content, market, (mediaUrls?.length ?? 0) > 0);
+    const supportsVision = this.modelSupportsVision(this.currentModel);
+    const hasImages = (mediaUrls?.length ?? 0) > 0 && supportsVision;
+    this.logger.log(
+      `[API] Gọi ${this.currentModel} via OpenRouter (${content.length} chars` +
+      `${hasImages ? `, ${mediaUrls!.length} ảnh` : supportsVision ? '' : ', vision bỏ qua'})`,
+    );
 
     const startMs = Date.now();
     let response: any;
@@ -222,7 +292,18 @@ export class AnalysisService {
                 'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
                 'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
             },
-            { role: 'user', content: prompt },
+            {
+              role: 'user',
+              content: hasImages
+                ? [
+                    { type: 'text', text: prompt },
+                    ...mediaUrls!.slice(0, 4).map(url => ({
+                      type: 'image_url',
+                      image_url: { url },
+                    })),
+                  ]
+                : prompt,
+            },
           ],
           temperature: 0.3,
           max_tokens: 600,
@@ -234,7 +315,7 @@ export class AnalysisService {
             'HTTP-Referer': 'https://github.com/trump-btc',
             'X-Title': 'Trump BTC Signal Bot',
           },
-          timeout: 60000,
+          timeout: 30000,
         },
       );
     } catch (err: any) {
@@ -246,11 +327,10 @@ export class AnalysisService {
         `model=${this.currentModel} | daily_calls=${this.dailyCallCount}/${this.DAILY_LIMIT} | ` +
         `error=${errMsg} | response_body=${body}`,
       );
-      // 429 = rate limit của OpenRouter free tier → hoàn trả count (không phải call thực sự)
-      // và re-throw để PollingService backoff/dừng backfill
-      if (status === 429) {
+      if (status === 429 || status === 404) {
+        // Không tốn call thực — hoàn trả counter
         this.dailyCallCount = Math.max(0, this.dailyCallCount - 1);
-        this.logger.warn(`[RATE LIMIT] OpenRouter 429 — hoàn trả dailyCallCount về ${this.dailyCallCount}`);
+        return tryFallback(`HTTP ${status}`);
       }
       throw err;
     }
@@ -264,17 +344,20 @@ export class AnalysisService {
     );
 
     const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
-    if (!raw) throw new Error('OpenAI trả về response rỗng');
+    if (!raw) {
+      this.logger.error(`[EMPTY RESPONSE] ${this.currentModel} trả về content rỗng sau ${elapsedMs}ms`);
+      return tryFallback(`empty response`);
+    }
 
-    // Strip markdown code fences nếu có (gpt-4o-mini đôi khi wrap trong ```json```)
+    // Strip markdown code fences nếu có
     const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
 
     let parsed: any;
     try {
       parsed = JSON.parse(cleaned);
     } catch {
-      this.logger.error(`[JSON ERROR] Không parse được response. Raw (${raw.length} chars):\n${raw.substring(0, 500)}`);
-      throw new Error('OpenAI response không phải JSON hợp lệ');
+      this.logger.error(`[JSON ERROR] Không parse được response từ ${this.currentModel}. Raw (${raw.length} chars):\n${raw.substring(0, 300)}`);
+      return tryFallback(`JSON parse error`);
     }
 
     return {
@@ -282,6 +365,7 @@ export class AnalysisService {
       btcInfluenceProbability: Math.min(100, Math.max(0, Number(parsed.btcInfluenceProbability) || 0)),
       btcDirection: this.normalizeDirection(parsed.btcDirection),
       reasoning: parsed.reasoning || '',
+      modelUsed: this.currentModel,
     };
   }
 
@@ -362,5 +446,92 @@ Trả về ONLY valid JSON:
   public async buildPromptForContent(content: string): Promise<string> {
     const market = await this.marketSignalService.getMarketContext();
     return this.buildPrompt(content, market);
+  }
+
+  /**
+   * Chạy phân tích song song với tất cả STATIC_MODELS.
+   * Market context được fetch 1 lần duy nhất rồi chia sẻ cho tất cả model.
+   * Không tính daily limit — chỉ dùng cho /testall command.
+   */
+  async analyzeWithAllModels(
+    content: string,
+  ): Promise<Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }>> {
+    const safeContent = content?.trim() ?? '';
+    if (!safeContent) {
+      return AnalysisService.STATIC_MODELS.map(m => ({
+        model: m.name,
+        probability: 0,
+        direction: 'neutral' as const,
+        error: 'no content',
+      }));
+    }
+
+    const market = await this.marketSignalService.getMarketContext();
+
+    const results = await Promise.all(
+      AnalysisService.STATIC_MODELS.map(async m => {
+        const r = await this.callSingleModel(safeContent, m.name, market);
+        return { model: m.name, ...r };
+      }),
+    );
+
+    return results;
+  }
+
+  /** Gọi 1 model cụ thể, không fallback, không đếm daily limit. */
+  private async callSingleModel(
+    content: string,
+    modelName: string,
+    market: MarketContextResult,
+  ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
+    const prompt = this.buildPrompt(content, market, false);
+    try {
+      const response = await axios.post(
+        this.openrouterApiUrl,
+        {
+          model: modelName,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Bạn là chuyên gia phân tích thị trường Bitcoin hàng đầu, am hiểu sâu về cách tin tức, chính trị, và sự kiện vĩ mô tác động đến tâm lý thị trường và giá BTC. ' +
+                'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
+                'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
+            },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.3,
+          max_tokens: 300,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.openrouterApiKey}`,
+            'HTTP-Referer': 'https://github.com/trump-btc',
+            'X-Title': 'Trump BTC Signal Bot',
+          },
+          timeout: 30000,
+        },
+      );
+
+      const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
+      if (!raw) return { probability: 0, direction: 'neutral', error: 'empty response' };
+
+      const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch {
+        return { probability: 0, direction: 'neutral', error: 'JSON parse error' };
+      }
+
+      return {
+        probability: Math.min(100, Math.max(0, Number(parsed.btcInfluenceProbability) || 0)),
+        direction: this.normalizeDirection(parsed.btcDirection),
+      };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      return { probability: 0, direction: 'neutral', error: status ? `HTTP ${status}` : 'timeout' };
+    }
   }
 }
