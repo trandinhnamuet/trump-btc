@@ -30,26 +30,26 @@ export class AnalysisService {
   private readonly DAILY_LIMIT = 500;
 
   // Static model list for OpenRouter free models (ordered by capability: strongest → weakest)
-  // vision: true = model hỗ trợ gửi ảnh (multimodal)
+  // Synced with OpenRouter /api/v1/models on 2026-06-07. vision: true = multimodal.
   static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean }> = [
-    { name: 'google/gemini-2.5-flash-preview:free',        inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'qwen/qwen2.5-vl-72b-instruct:free',           inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'openai/gpt-oss-120b:free',                    inputPrice: 0, outputPrice: 0              },
-    { name: 'deepseek/deepseek-r1:free',                   inputPrice: 0, outputPrice: 0              },
-    { name: 'openrouter/owl-alpha',                        inputPrice: 0, outputPrice: 0              },
-    { name: 'nvidia/nemotron-3-super-120b-a12b:free',      inputPrice: 0, outputPrice: 0              },
-    { name: 'poolside/laguna-m.1:free',                    inputPrice: 0, outputPrice: 0              },
-    { name: 'meta-llama/llama-3.2-11b-vision-instruct:free', inputPrice: 0, outputPrice: 0, vision: true },
-    { name: 'meta-llama/llama-3.3-70b-instruct:free',      inputPrice: 0, outputPrice: 0              },
-    { name: 'google/gemma-3-27b-it:free',                  inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'z-ai/glm-4.5-air:free',                      inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'openai/gpt-oss-20b:free',                     inputPrice: 0, outputPrice: 0              },
-    { name: 'poolside/laguna-xs.2:free',                   inputPrice: 0, outputPrice: 0              },
-    { name: 'qwen/qwen3-8b:free',                          inputPrice: 0, outputPrice: 0              },
-    { name: 'google/gemma-3-12b-it:free',                  inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'meta-llama/llama-3.1-8b-instruct:free',       inputPrice: 0, outputPrice: 0              },
-    { name: 'mistralai/mistral-7b-instruct:free',          inputPrice: 0, outputPrice: 0              },
-    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',      inputPrice: 0, outputPrice: 0              },
+    { name: 'moonshotai/kimi-k2.6:free',                                     inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'nousresearch/hermes-3-llama-3.1-405b:free',                     inputPrice: 0, outputPrice: 0              },
+    { name: 'google/gemma-4-31b-it:free',                                    inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'openai/gpt-oss-120b:free',                                      inputPrice: 0, outputPrice: 0              },
+    { name: 'qwen/qwen3-next-80b-a3b-instruct:free',                         inputPrice: 0, outputPrice: 0              },
+    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',                        inputPrice: 0, outputPrice: 0              },
+    { name: 'nvidia/nemotron-3-super-120b-a12b:free',                        inputPrice: 0, outputPrice: 0              },
+    { name: 'openrouter/owl-alpha',                                          inputPrice: 0, outputPrice: 0              },
+    { name: 'meta-llama/llama-3.3-70b-instruct:free',                        inputPrice: 0, outputPrice: 0              },
+    { name: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', inputPrice: 0, outputPrice: 0              },
+    { name: 'google/gemma-4-26b-a4b-it:free',                               inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'nvidia/nemotron-3-nano-30b-a3b:free',                           inputPrice: 0, outputPrice: 0              },
+    { name: 'z-ai/glm-4.5-air:free',                                        inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'nvidia/nemotron-nano-12b-v2-vl:free',                           inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'poolside/laguna-m.1:free',                                      inputPrice: 0, outputPrice: 0              },
+    { name: 'openai/gpt-oss-20b:free',                                       inputPrice: 0, outputPrice: 0              },
+    { name: 'nvidia/nemotron-nano-9b-v2:free',                               inputPrice: 0, outputPrice: 0              },
+    { name: 'poolside/laguna-xs.2:free',                                     inputPrice: 0, outputPrice: 0              },
   ];
 
   // Daily rate limit state (in-memory, resets on restart or new calendar day)
