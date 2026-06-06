@@ -349,13 +349,8 @@ export class AnalysisService {
       return tryFallback(`empty response`);
     }
 
-    // Strip markdown code fences nếu có
-    const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
+    const parsed = this.extractJson(raw);
+    if (!parsed) {
       this.logger.error(`[JSON ERROR] Không parse được response từ ${this.currentModel}. Raw (${raw.length} chars):\n${raw.substring(0, 300)}`);
       return tryFallback(`JSON parse error`);
     }
@@ -468,21 +463,33 @@ Trả về ONLY valid JSON:
 
     const market = await this.marketSignalService.getMarketContext();
 
-    const results = await Promise.all(
-      AnalysisService.STATIC_MODELS.map(async m => {
-        const r = await this.callSingleModel(safeContent, m.name, market);
-        return { model: m.name, ...r };
-      }),
-    );
+    const results: Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> = [];
+    const BATCH = 5;
+    const DELAY_MS = 1500;
+
+    for (let i = 0; i < AnalysisService.STATIC_MODELS.length; i += BATCH) {
+      const batch = AnalysisService.STATIC_MODELS.slice(i, i + BATCH);
+      const batchResults = await Promise.all(
+        batch.map(async m => {
+          const r = await this.callSingleModel(safeContent, m.name, market);
+          return { model: m.name, ...r };
+        }),
+      );
+      results.push(...batchResults);
+      if (i + BATCH < AnalysisService.STATIC_MODELS.length) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      }
+    }
 
     return results;
   }
 
-  /** Gọi 1 model cụ thể, không fallback, không đếm daily limit. */
+  /** Gọi 1 model cụ thể, không fallback, không đếm daily limit. Retry 1 lần sau 3s nếu gặp 429. */
   private async callSingleModel(
     content: string,
     modelName: string,
     market: MarketContextResult,
+    isRetry = false,
   ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
     const prompt = this.buildPrompt(content, market, false);
     try {
@@ -501,7 +508,7 @@ Trả về ONLY valid JSON:
             { role: 'user', content: prompt },
           ],
           temperature: 0.3,
-          max_tokens: 300,
+          max_tokens: 400,
         },
         {
           headers: {
@@ -510,18 +517,16 @@ Trả về ONLY valid JSON:
             'HTTP-Referer': 'https://github.com/trump-btc',
             'X-Title': 'Trump BTC Signal Bot',
           },
-          timeout: 30000,
+          timeout: 35000,
         },
       );
 
       const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
       if (!raw) return { probability: 0, direction: 'neutral', error: 'empty response' };
 
-      const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-      let parsed: any;
-      try {
-        parsed = JSON.parse(cleaned);
-      } catch {
+      const parsed = this.extractJson(raw);
+      if (!parsed) {
+        this.logger.warn(`[TESTALL] JSON parse failed for ${modelName}. Raw: ${raw.substring(0, 150)}`);
         return { probability: 0, direction: 'neutral', error: 'JSON parse error' };
       }
 
@@ -531,7 +536,42 @@ Trả về ONLY valid JSON:
       };
     } catch (err: any) {
       const status = err?.response?.status;
+      if (status === 429 && !isRetry) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        return this.callSingleModel(content, modelName, market, true);
+      }
       return { probability: 0, direction: 'neutral', error: status ? `HTTP ${status}` : 'timeout' };
     }
+  }
+
+  /**
+   * Trích xuất JSON từ response text của model.
+   * Xử lý: markdown fences, <think> blocks (reasoning models), JSON embedded trong text.
+   */
+  private extractJson(raw: string): any | null {
+    // Xóa think blocks (deepseek-r1, nemotron reasoning, v.v.)
+    let cleaned = raw
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/^```json\s*/im, '')
+      .replace(/^```\s*/im, '')
+      .replace(/\s*```$/im, '')
+      .trim();
+
+    // Thử parse trực tiếp
+    try { return JSON.parse(cleaned); } catch {}
+
+    // Tìm JSON object chứa btcInfluenceProbability
+    const match = cleaned.match(/\{[^{}]*"btcInfluenceProbability"[^{}]*\}/s);
+    if (match) {
+      try { return JSON.parse(match[0]); } catch {}
+    }
+
+    // Tìm JSON object lồng nhau (nested)
+    const deepMatch = cleaned.match(/\{[\s\S]*?"btcInfluenceProbability"[\s\S]*?\}/);
+    if (deepMatch) {
+      try { return JSON.parse(deepMatch[0]); } catch {}
+    }
+
+    return null;
   }
 }
