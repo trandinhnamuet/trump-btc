@@ -44,11 +44,11 @@ export class AnalysisService {
     { name: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', inputPrice: 0, outputPrice: 0              },
     { name: 'google/gemma-4-26b-a4b-it:free',                               inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'nvidia/nemotron-3-nano-30b-a3b:free',                           inputPrice: 0, outputPrice: 0              },
-    { name: 'z-ai/glm-4.5-air:free',                                        inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',            inputPrice: 0, outputPrice: 0              },
     { name: 'nvidia/nemotron-nano-12b-v2-vl:free',                           inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'poolside/laguna-m.1:free',                                      inputPrice: 0, outputPrice: 0              },
     { name: 'openai/gpt-oss-20b:free',                                       inputPrice: 0, outputPrice: 0              },
-    { name: 'nvidia/nemotron-nano-9b-v2:free',                               inputPrice: 0, outputPrice: 0              },
+    { name: 'qwen/qwen3-coder:free',                                         inputPrice: 0, outputPrice: 0              },
     { name: 'poolside/laguna-xs.2:free',                                     inputPrice: 0, outputPrice: 0              },
   ];
 
