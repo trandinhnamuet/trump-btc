@@ -484,7 +484,7 @@ Trả về ONLY valid JSON:
     return results;
   }
 
-  /** Gọi 1 model cụ thể, không fallback, không đếm daily limit. Retry 1 lần sau 3s nếu gặp 429. */
+  /** Gọi 1 model cụ thể, không fallback, không đếm daily limit. Retry 1 lần sau 8s nếu gặp 429. */
   private async callSingleModel(
     content: string,
     modelName: string,
@@ -501,14 +501,13 @@ Trả về ONLY valid JSON:
             {
               role: 'system',
               content:
-                'Bạn là chuyên gia phân tích thị trường Bitcoin hàng đầu, am hiểu sâu về cách tin tức, chính trị, và sự kiện vĩ mô tác động đến tâm lý thị trường và giá BTC. ' +
-                'Bạn suy luận từ bản chất sự việc, không theo template. Mỗi phân tích phải đặc thù cho post đó và trạng thái thị trường hiện tại. ' +
-                'QUAN TRỌNG: Toàn bộ phần "reasoning" và "summary" phải viết bằng TIẾNG VIỆT.',
+                'You are a Bitcoin market analyst. Reply ONLY with a single JSON object, no text before or after. ' +
+                'Keep "summary" under 20 words and "reasoning" under 40 words.',
             },
             { role: 'user', content: prompt },
           ],
           temperature: 0.3,
-          max_tokens: 400,
+          max_tokens: 250,
         },
         {
           headers: {
@@ -522,12 +521,13 @@ Trả về ONLY valid JSON:
       );
 
       const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
-      if (!raw) return { probability: 0, direction: 'neutral', error: 'empty response' };
+      if (!raw || !raw.trim()) return { probability: 0, direction: 'neutral', error: 'response rỗng' };
 
       const parsed = this.extractJson(raw);
       if (!parsed) {
-        this.logger.warn(`[TESTALL] JSON parse failed for ${modelName}. Raw: ${raw.substring(0, 150)}`);
-        return { probability: 0, direction: 'neutral', error: 'JSON parse error' };
+        this.logger.warn(`[TESTALL] JSON parse failed for ${modelName}. Raw: ${raw.substring(0, 200)}`);
+        const preview = raw.substring(0, 40).replace(/\n/g, ' ').trim();
+        return { probability: 0, direction: 'neutral', error: `JSON lỗi: "${preview}…"` };
       }
 
       return {
@@ -540,7 +540,22 @@ Trả về ONLY valid JSON:
         await new Promise(resolve => setTimeout(resolve, 8000));
         return this.callSingleModel(content, modelName, market, true);
       }
-      return { probability: 0, direction: 'neutral', error: status ? `HTTP ${status}` : 'timeout' };
+      if (status === 429) {
+        const body = err?.response?.data?.error?.message ?? '';
+        const meta = err?.response?.data?.error?.metadata?.raw ?? '';
+        if (body.includes('free-models-per-day')) return { probability: 0, direction: 'neutral', error: '429: giới hạn ngày (free tier)' };
+        if (meta.includes('Venice') || body.includes('Venice')) return { probability: 0, direction: 'neutral', error: '429: Venice quá tải' };
+        if (meta || body.includes('upstream')) return { probability: 0, direction: 'neutral', error: '429: nhà cung cấp quá tải' };
+        return { probability: 0, direction: 'neutral', error: '429: rate limit' };
+      }
+      if (status === 400) {
+        const msg = err?.response?.data?.error?.message ?? '';
+        if (msg.includes('not a valid model')) return { probability: 0, direction: 'neutral', error: 'model không tồn tại' };
+        if (msg.includes('403') && msg.includes('image')) return { probability: 0, direction: 'neutral', error: '400: ảnh bị chặn (403)' };
+        return { probability: 0, direction: 'neutral', error: `400: ${msg.substring(0, 40)}` };
+      }
+      if (!status) return { probability: 0, direction: 'neutral', error: 'timeout (>35s)' };
+      return { probability: 0, direction: 'neutral', error: `HTTP ${status}` };
     }
   }
 
