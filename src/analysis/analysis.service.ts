@@ -491,23 +491,22 @@ Trả về ONLY valid JSON:
     market: MarketContextResult,
     isRetry = false,
   ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
-    const prompt = this.buildPrompt(content, market, false);
+    // Dùng prompt ngắn gọn tiếng Anh cho /testall — không qua buildPrompt
+    // để tránh models trả về verbose Vietnamese làm tràn max_tokens
+    const shortPrompt =
+      `Rate Bitcoin price impact of this post (0-100%). ` +
+      `Reply ONLY JSON: {"btcInfluenceProbability":<int>,"btcDirection":"increase"|"decrease"|"neutral","summary":"<5 words>","reasoning":"<10 words>"}\n` +
+      `POST: ${content.substring(0, 400)}`;
     try {
       const response = await axios.post(
         this.openrouterApiUrl,
         {
           model: modelName,
           messages: [
-            {
-              role: 'system',
-              content:
-                'You are a Bitcoin market analyst. Reply ONLY with a single JSON object, no text before or after. ' +
-                'Keep "summary" under 20 words and "reasoning" under 40 words.',
-            },
-            { role: 'user', content: prompt },
+            { role: 'user', content: shortPrompt },
           ],
-          temperature: 0.3,
-          max_tokens: 250,
+          temperature: 0.1,
+          max_tokens: 150,
         },
         {
           headers: {
