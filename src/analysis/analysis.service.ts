@@ -461,8 +461,6 @@ Trả về ONLY valid JSON:
       }));
     }
 
-    const market = await this.marketSignalService.getMarketContext();
-
     const results: Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> = [];
     const BATCH = 4;
     const DELAY_MS = 2000;
@@ -471,7 +469,7 @@ Trả về ONLY valid JSON:
       const batch = AnalysisService.STATIC_MODELS.slice(i, i + BATCH);
       const batchResults = await Promise.all(
         batch.map(async m => {
-          const r = await this.callSingleModel(safeContent, m.name, market);
+          const r = await this.callSingleModel(safeContent, m.name);
           return { model: m.name, ...r };
         }),
       );
@@ -488,25 +486,27 @@ Trả về ONLY valid JSON:
   private async callSingleModel(
     content: string,
     modelName: string,
-    market: MarketContextResult,
     isRetry = false,
   ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
-    // Dùng prompt ngắn gọn tiếng Anh cho /testall — không qua buildPrompt
-    // để tránh models trả về verbose Vietnamese làm tràn max_tokens
-    const shortPrompt =
-      `Rate Bitcoin price impact of this post (0-100%). ` +
-      `Reply ONLY JSON: {"btcInfluenceProbability":<int>,"btcDirection":"increase"|"decrease"|"neutral","summary":"<5 words>","reasoning":"<10 words>"}\n` +
-      `POST: ${content.substring(0, 400)}`;
+    // Prompt ngắn cho /testall: system role định dạng JSON, user message chỉ có nội dung
+    // Tránh verbose Vietnamese (gây truncation) nhưng vẫn giữ system role (cần cho nemotron/laguna)
+    const testPrompt = `Trump post: "${content.substring(0, 350)}"\nRate Bitcoin price impact: set btcInfluenceProbability (0-100) and btcDirection.`;
     try {
       const response = await axios.post(
         this.openrouterApiUrl,
         {
           model: modelName,
           messages: [
-            { role: 'user', content: shortPrompt },
+            {
+              role: 'system',
+              content:
+                'Bitcoin market analyst. Reply with ONLY this JSON (fill values, no extra text):\n' +
+                '{"btcInfluenceProbability":0-100,"btcDirection":"increase"|"decrease"|"neutral","summary":"brief","reasoning":"brief"}',
+            },
+            { role: 'user', content: testPrompt },
           ],
           temperature: 0.1,
-          max_tokens: 150,
+          max_tokens: 160,
         },
         {
           headers: {
@@ -537,7 +537,7 @@ Trả về ONLY valid JSON:
       const status = err?.response?.status;
       if (status === 429 && !isRetry) {
         await new Promise(resolve => setTimeout(resolve, 8000));
-        return this.callSingleModel(content, modelName, market, true);
+        return this.callSingleModel(content, modelName, true);
       }
       if (status === 429) {
         const body = err?.response?.data?.error?.message ?? '';
