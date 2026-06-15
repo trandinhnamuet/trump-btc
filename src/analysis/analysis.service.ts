@@ -37,7 +37,8 @@ export class AnalysisService {
     { name: 'google/gemma-4-31b-it:free',                                    inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'openai/gpt-oss-120b:free',                                      inputPrice: 0, outputPrice: 0              },
     { name: 'qwen/qwen3-next-80b-a3b-instruct:free',                         inputPrice: 0, outputPrice: 0              },
-    // nemotron-3-ultra removed: returns HTTP 200 with no 'choices' field (broken free tier)
+    // nemotron-ultra: reasoning model, NVIDIA free tier returns HTTP 200+{error:500} intermittently — needs high maxTokens
+    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',                        inputPrice: 0, outputPrice: 0, maxTokens: 1500 },
     { name: 'nvidia/nemotron-3-super-120b-a12b:free',                        inputPrice: 0, outputPrice: 0              },
     { name: 'openrouter/owl-alpha',                                          inputPrice: 0, outputPrice: 0              },
     { name: 'meta-llama/llama-3.3-70b-instruct:free',                        inputPrice: 0, outputPrice: 0              },
@@ -523,8 +524,15 @@ Trả về ONLY valid JSON:
         },
       );
 
+      // Some providers return HTTP 200 with {error: ...} instead of {choices: [...]}
+      if (response.data?.error && !response.data?.choices?.length) {
+        const errMsg = response.data.error?.message ?? 'provider error';
+        const errCode = response.data.error?.code ?? '';
+        return { probability: 0, direction: 'neutral', error: `provider ${errCode}: ${String(errMsg).substring(0, 40)}` };
+      }
+
       const msg = response.data?.choices?.[0]?.message;
-      // Some reasoning models (e.g. laguna) return content=null and put the response in 'reasoning' field
+      // Some reasoning models (e.g. laguna, nemotron-ultra) return content=null and put response in 'reasoning' field
       let raw: string = msg?.content ?? '';
       if (!raw?.trim() && msg?.reasoning) raw = msg.reasoning;
       if (!raw || !raw.trim()) return { probability: 0, direction: 'neutral', error: 'response rỗng' };
