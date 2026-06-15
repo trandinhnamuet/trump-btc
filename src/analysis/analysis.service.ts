@@ -31,12 +31,13 @@ export class AnalysisService {
 
   // Static model list for OpenRouter free models (ordered by capability: strongest → weakest)
   // Synced with OpenRouter /api/v1/models on 2026-06-07. vision: true = multimodal.
-  static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean }> = [
+  // maxTokens: per-model override for /testall (reasoning models need more tokens to finish thinking before JSON output)
+  static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean; maxTokens?: number }> = [
     { name: 'nousresearch/hermes-3-llama-3.1-405b:free',                     inputPrice: 0, outputPrice: 0              },
     { name: 'google/gemma-4-31b-it:free',                                    inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'openai/gpt-oss-120b:free',                                      inputPrice: 0, outputPrice: 0              },
     { name: 'qwen/qwen3-next-80b-a3b-instruct:free',                         inputPrice: 0, outputPrice: 0              },
-    { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',                        inputPrice: 0, outputPrice: 0              },
+    // nemotron-3-ultra removed: returns HTTP 200 with no 'choices' field (broken free tier)
     { name: 'nvidia/nemotron-3-super-120b-a12b:free',                        inputPrice: 0, outputPrice: 0              },
     { name: 'openrouter/owl-alpha',                                          inputPrice: 0, outputPrice: 0              },
     { name: 'meta-llama/llama-3.3-70b-instruct:free',                        inputPrice: 0, outputPrice: 0              },
@@ -45,10 +46,11 @@ export class AnalysisService {
     { name: 'nvidia/nemotron-3-nano-30b-a3b:free',                           inputPrice: 0, outputPrice: 0              },
     { name: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',            inputPrice: 0, outputPrice: 0              },
     { name: 'nvidia/nemotron-nano-12b-v2-vl:free',                           inputPrice: 0, outputPrice: 0, vision: true  },
-    { name: 'poolside/laguna-m.1:free',                                      inputPrice: 0, outputPrice: 0              },
+    // laguna models are deep reasoning models: content=null, JSON only produced after long thinking — needs high maxTokens
+    { name: 'poolside/laguna-m.1:free',                                      inputPrice: 0, outputPrice: 0, maxTokens: 1500 },
     { name: 'openai/gpt-oss-20b:free',                                       inputPrice: 0, outputPrice: 0              },
     { name: 'qwen/qwen3-coder:free',                                         inputPrice: 0, outputPrice: 0              },
-    { name: 'poolside/laguna-xs.2:free',                                     inputPrice: 0, outputPrice: 0              },
+    { name: 'poolside/laguna-xs.2:free',                                     inputPrice: 0, outputPrice: 0, maxTokens: 1500 },
   ];
 
   // Daily rate limit state (in-memory, resets on restart or new calendar day)
@@ -487,6 +489,9 @@ Trả về ONLY valid JSON:
     modelName: string,
     isRetry = false,
   ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
+    const modelMeta = AnalysisService.STATIC_MODELS.find(m => m.name === modelName);
+    const maxTokens = modelMeta?.maxTokens ?? 500;
+
     // Prompt ngắn cho /testall: system role định dạng JSON, user message chỉ có nội dung
     // Tránh verbose Vietnamese (gây truncation) nhưng vẫn giữ system role (cần cho nemotron/laguna)
     const testPrompt = `Trump post: "${content.substring(0, 350)}"\nRate Bitcoin price impact: set btcInfluenceProbability (0-100) and btcDirection.`;
@@ -505,7 +510,7 @@ Trả về ONLY valid JSON:
             { role: 'user', content: testPrompt },
           ],
           temperature: 0.1,
-          max_tokens: 500,
+          max_tokens: maxTokens,
         },
         {
           headers: {
@@ -514,11 +519,14 @@ Trả về ONLY valid JSON:
             'HTTP-Referer': 'https://github.com/trump-btc',
             'X-Title': 'Trump BTC Signal Bot',
           },
-          timeout: 35000,
+          timeout: 60000,
         },
       );
 
-      const raw: string = response.data?.choices?.[0]?.message?.content ?? '';
+      const msg = response.data?.choices?.[0]?.message;
+      // Some reasoning models (e.g. laguna) return content=null and put the response in 'reasoning' field
+      let raw: string = msg?.content ?? '';
+      if (!raw?.trim() && msg?.reasoning) raw = msg.reasoning;
       if (!raw || !raw.trim()) return { probability: 0, direction: 'neutral', error: 'response rỗng' };
 
       const parsed = this.extractJson(raw);
