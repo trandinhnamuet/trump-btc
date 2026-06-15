@@ -32,7 +32,6 @@ export class AnalysisService {
   // Static model list for OpenRouter free models (ordered by capability: strongest → weakest)
   // Synced with OpenRouter /api/v1/models on 2026-06-07. vision: true = multimodal.
   static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean }> = [
-    { name: 'moonshotai/kimi-k2.6:free',                                     inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'nousresearch/hermes-3-llama-3.1-405b:free',                     inputPrice: 0, outputPrice: 0              },
     { name: 'google/gemma-4-31b-it:free',                                    inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'openai/gpt-oss-120b:free',                                      inputPrice: 0, outputPrice: 0              },
@@ -506,7 +505,7 @@ Trả về ONLY valid JSON:
             { role: 'user', content: testPrompt },
           ],
           temperature: 0.1,
-          max_tokens: 160,
+          max_tokens: 500,
         },
         {
           headers: {
