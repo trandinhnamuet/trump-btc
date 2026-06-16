@@ -235,10 +235,11 @@ export class TelegramService implements OnModuleInit {
 
         const lines = sorted.map(r => {
           const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
-          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i>`;
+          const dur = `<i>(${(r.durationMs / 1000).toFixed(1)}s)</i>`;
+          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i> ${dur}`;
           const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
           const icon = r.probability >= 70 ? '🔴' : r.probability >= 40 ? '🟡' : '🟢';
-          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b>`;
+          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b> ${dur}`;
         });
 
         const ok = results.filter(r => !r.error).length;
@@ -264,6 +265,120 @@ export class TelegramService implements OnModuleInit {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(`❌ Lỗi /testall: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
+    // Handle /testallfull — same as /testall but also sends per-model explanations
+    this.bot.onText(/^\/testallfull(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const input = match?.[1]?.trim();
+
+      if (!input) {
+        await this.bot?.sendMessage(
+          chatId,
+          'ℹ️ Dùng: <code>/testallfull &lt;nội dung&gt;</code> hoặc <code>/testallfull &lt;postId&gt;</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const postIdMatch = input.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
+      let content = input;
+      if (postIdMatch) {
+        const postId = postIdMatch[1];
+        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài <code>${postId}</code>...`, { parse_mode: 'HTML' });
+        try {
+          const post = await this.truthSocialService.getPostById(postId);
+          if (!post?.content) {
+            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài <code>${postId}</code>.`, { parse_mode: 'HTML' });
+            return;
+          }
+          content = post.content;
+        } catch (err) {
+          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
+
+      const modelCount = this.analysisService.getAvailableModels().length;
+      const preview = content.length > 120 ? content.substring(0, 117) + '...' : content;
+      const waitMsg = await this.bot?.sendMessage(
+        chatId,
+        `⏳ Đang chạy <b>${modelCount} models</b> song song...\n\n<i>${this.escapeHtml(preview)}</i>`,
+        { parse_mode: 'HTML' },
+      );
+
+      try {
+        const results = await this.analysisService.analyzeWithAllModels(content);
+
+        const sorted = [...results].sort((a, b) => {
+          if (a.error && !b.error) return 1;
+          if (!a.error && b.error) return -1;
+          return b.probability - a.probability;
+        });
+
+        const summaryLines = sorted.map(r => {
+          const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
+          const dur = `<i>(${(r.durationMs / 1000).toFixed(1)}s)</i>`;
+          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i> ${dur}`;
+          const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
+          const icon = r.probability >= 70 ? '🔴' : r.probability >= 40 ? '🟡' : '🟢';
+          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b> ${dur}`;
+        });
+
+        const ok = results.filter(r => !r.error).length;
+        const err = results.length - ok;
+        const errNote = err > 0 ? ` · <i>${err} lỗi</i>` : '';
+        const summaryMsg =
+          `🔬 <b>TEST ALL — FULL</b> (${ok}/${results.length} OK${errNote})\n` +
+          `<i>${this.escapeHtml(preview)}</i>\n\n` +
+          summaryLines.join('\n');
+
+        if (waitMsg?.message_id) {
+          await this.bot?.editMessageText(summaryMsg, {
+            chat_id: chatId,
+            message_id: waitMsg.message_id,
+            parse_mode: 'HTML',
+          });
+        } else {
+          await this.bot?.sendMessage(chatId, summaryMsg, { parse_mode: 'HTML' });
+        }
+
+        // Send explanations for successful models as a separate message
+        const withExplanation = sorted.filter(r => !r.error && r.explanation);
+        if (withExplanation.length > 0) {
+          const explanLines = withExplanation.map((r, i) => {
+            const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
+            const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
+            const exp = this.escapeHtml(r.explanation!.substring(0, 150));
+            return `${i + 1}. <b>${shortName}</b> (${r.probability}% ${dir}):\n<i>${exp}</i>`;
+          });
+
+          // Split into chunks to stay within Telegram 4096-char limit
+          const header = `💬 <b>GIẢI THÍCH CHI TIẾT</b> (${withExplanation.length} models)\n\n`;
+          const chunks: string[] = [];
+          let current = header;
+          for (const line of explanLines) {
+            const candidate = current + (current === header ? '' : '\n\n') + line;
+            if (candidate.length > 3900) {
+              chunks.push(current);
+              current = line;
+            } else {
+              current = candidate;
+            }
+          }
+          if (current) chunks.push(current);
+
+          for (const chunk of chunks) {
+            await this.bot?.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
+          }
+        }
+
+        this.logger.log(`✅ /testallfull: ${ok}/${results.length} models OK`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`❌ Lỗi /testallfull: ${errMsg}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
@@ -323,7 +438,8 @@ export class TelegramService implements OnModuleInit {
         `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +
         `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
         `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
-        `🔬 /testall &lt;nội dung&gt; — So sánh kết quả từ tất cả models song song\n` +
+        `🔬 /testall &lt;nội dung&gt; — So sánh kết quả từ tất cả models (kèm thời gian)\n` +
+        `🔬 /testallfull &lt;nội dung&gt; — Giống /testall nhưng thêm giải thích của từng model\n` +
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
         `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
@@ -749,19 +865,20 @@ export class TelegramService implements OnModuleInit {
     // Handle /models command - show priority-ordered model list
     this.bot.onText(/^\/models(?:@[\w_]+)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
-      const list = this.analysisService.getAvailableModels() as Array<{ name: string; vision?: boolean }>;
+      const list = this.analysisService.getAvailableModels() as Array<{ name: string; vision?: boolean; maxTokens?: number }>;
       const current = this.analysisService.getCurrentModel();
       const lines = list.map((m, i) => {
         const isActive = m.name === current;
         const vision = m.vision ? ' 📷' : '';
+        const reasoning = m.maxTokens && m.maxTokens > 500 ? ` 🧠${m.maxTokens}t` : '';
         const mark = isActive ? ' ✅ <b>(đang dùng)</b>' : '';
-        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${mark}`;
+        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${reasoning}${mark}`;
       });
       await this.bot?.sendMessage(
         chatId,
-        `🤖 <b>DANH SÁCH MODEL (thứ tự ưu tiên)</b>\n\n` +
-        `Khi model cao hơn bị lỗi (429/404/empty) → tự động thử model tiếp theo.\n` +
-        `📷 = hỗ trợ phân tích ảnh\n\n` +
+        `🤖 <b>DANH SÁCH MODEL (thứ tự ưu tiên fallback)</b>\n\n` +
+        `Khi model bị lỗi (429/404/empty) → tự động fallback xuống model tiếp theo.\n` +
+        `📷 = vision (phân tích ảnh) · 🧠 = reasoning (cần nhiều token)\n\n` +
         lines.join('\n'),
         { parse_mode: 'HTML' },
       );

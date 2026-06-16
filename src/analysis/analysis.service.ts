@@ -452,7 +452,7 @@ Trả về ONLY valid JSON:
    */
   async analyzeWithAllModels(
     content: string,
-  ): Promise<Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }>> {
+  ): Promise<Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string; durationMs: number; explanation?: string }>> {
     const safeContent = content?.trim() ?? '';
     if (!safeContent) {
       return AnalysisService.STATIC_MODELS.map(m => ({
@@ -460,10 +460,11 @@ Trả về ONLY valid JSON:
         probability: 0,
         direction: 'neutral' as const,
         error: 'no content',
+        durationMs: 0,
       }));
     }
 
-    const results: Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> = [];
+    const results: Array<{ model: string; probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string; durationMs: number; explanation?: string }> = [];
     const BATCH = 4;
     const DELAY_MS = 2000;
 
@@ -489,9 +490,11 @@ Trả về ONLY valid JSON:
     content: string,
     modelName: string,
     isRetry = false,
-  ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string }> {
+    callStart = Date.now(),
+  ): Promise<{ probability: number; direction: 'increase' | 'decrease' | 'neutral'; error?: string; durationMs: number; explanation?: string }> {
     const modelMeta = AnalysisService.STATIC_MODELS.find(m => m.name === modelName);
     const maxTokens = modelMeta?.maxTokens ?? 500;
+    const ms = () => Date.now() - callStart;
 
     // Prompt ngắn cho /testall: system role định dạng JSON, user message chỉ có nội dung
     // Tránh verbose Vietnamese (gây truncation) nhưng vẫn giữ system role (cần cho nemotron/laguna)
@@ -528,48 +531,51 @@ Trả về ONLY valid JSON:
       if (response.data?.error && !response.data?.choices?.length) {
         const errMsg = response.data.error?.message ?? 'provider error';
         const errCode = response.data.error?.code ?? '';
-        return { probability: 0, direction: 'neutral', error: `provider ${errCode}: ${String(errMsg).substring(0, 40)}` };
+        return { probability: 0, direction: 'neutral', error: `provider ${errCode}: ${String(errMsg).substring(0, 40)}`, durationMs: ms() };
       }
 
       const msg = response.data?.choices?.[0]?.message;
       // Some reasoning models (e.g. laguna, nemotron-ultra) return content=null and put response in 'reasoning' field
       let raw: string = msg?.content ?? '';
       if (!raw?.trim() && msg?.reasoning) raw = msg.reasoning;
-      if (!raw || !raw.trim()) return { probability: 0, direction: 'neutral', error: 'response rỗng' };
+      if (!raw || !raw.trim()) return { probability: 0, direction: 'neutral', error: 'response rỗng', durationMs: ms() };
 
       const parsed = this.extractJson(raw);
       if (!parsed) {
         this.logger.warn(`[TESTALL] JSON parse failed for ${modelName}. Raw: ${raw.substring(0, 200)}`);
         const preview = raw.substring(0, 40).replace(/\n/g, ' ').trim();
-        return { probability: 0, direction: 'neutral', error: `JSON lỗi: "${preview}…"` };
+        return { probability: 0, direction: 'neutral', error: `JSON lỗi: "${preview}…"`, durationMs: ms() };
       }
 
+      const explanationRaw = parsed.summary || parsed.reasoning;
       return {
         probability: Math.min(100, Math.max(0, Number(parsed.btcInfluenceProbability) || 0)),
         direction: this.normalizeDirection(parsed.btcDirection),
+        explanation: explanationRaw ? String(explanationRaw).substring(0, 200) : undefined,
+        durationMs: ms(),
       };
     } catch (err: any) {
       const status = err?.response?.status;
       if (status === 429 && !isRetry) {
         await new Promise(resolve => setTimeout(resolve, 8000));
-        return this.callSingleModel(content, modelName, true);
+        return this.callSingleModel(content, modelName, true, callStart);
       }
       if (status === 429) {
         const body = err?.response?.data?.error?.message ?? '';
         const meta = err?.response?.data?.error?.metadata?.raw ?? '';
-        if (body.includes('free-models-per-day')) return { probability: 0, direction: 'neutral', error: '429: giới hạn ngày (free tier)' };
-        if (meta.includes('Venice') || body.includes('Venice')) return { probability: 0, direction: 'neutral', error: '429: Venice quá tải' };
-        if (meta || body.includes('upstream')) return { probability: 0, direction: 'neutral', error: '429: nhà cung cấp quá tải' };
-        return { probability: 0, direction: 'neutral', error: '429: rate limit' };
+        if (body.includes('free-models-per-day')) return { probability: 0, direction: 'neutral', error: '429: giới hạn ngày (free tier)', durationMs: ms() };
+        if (meta.includes('Venice') || body.includes('Venice')) return { probability: 0, direction: 'neutral', error: '429: Venice quá tải', durationMs: ms() };
+        if (meta || body.includes('upstream')) return { probability: 0, direction: 'neutral', error: '429: nhà cung cấp quá tải', durationMs: ms() };
+        return { probability: 0, direction: 'neutral', error: '429: rate limit', durationMs: ms() };
       }
       if (status === 400) {
         const msg = err?.response?.data?.error?.message ?? '';
-        if (msg.includes('not a valid model')) return { probability: 0, direction: 'neutral', error: 'model không tồn tại' };
-        if (msg.includes('403') && msg.includes('image')) return { probability: 0, direction: 'neutral', error: '400: ảnh bị chặn (403)' };
-        return { probability: 0, direction: 'neutral', error: `400: ${msg.substring(0, 40)}` };
+        if (msg.includes('not a valid model')) return { probability: 0, direction: 'neutral', error: 'model không tồn tại', durationMs: ms() };
+        if (msg.includes('403') && msg.includes('image')) return { probability: 0, direction: 'neutral', error: '400: ảnh bị chặn (403)', durationMs: ms() };
+        return { probability: 0, direction: 'neutral', error: `400: ${msg.substring(0, 40)}`, durationMs: ms() };
       }
-      if (!status) return { probability: 0, direction: 'neutral', error: 'timeout (>35s)' };
-      return { probability: 0, direction: 'neutral', error: `HTTP ${status}` };
+      if (!status) return { probability: 0, direction: 'neutral', error: 'timeout (>35s)', durationMs: ms() };
+      return { probability: 0, direction: 'neutral', error: `HTTP ${status}`, durationMs: ms() };
     }
   }
 
