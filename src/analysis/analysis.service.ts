@@ -26,13 +26,15 @@ export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
   private readonly openrouterApiKey: string;
   private readonly openrouterApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-  private currentModel = 'openai/gpt-oss-120b:free';
+  private currentModel = 'nvidia/nemotron-nano-12b-v2-vl:free';
   private readonly DAILY_LIMIT = 500;
 
   // Static model list for OpenRouter free models (ordered by capability: strongest → weakest)
   // Synced with OpenRouter /api/v1/models on 2026-06-07. vision: true = multimodal.
   // maxTokens: per-model override for /testall (reasoning models need more tokens to finish thinking before JSON output)
   static readonly STATIC_MODELS: Array<{ name: string; inputPrice: number; outputPrice: number; vision?: boolean; maxTokens?: number }> = [
+    { name: 'nvidia/nemotron-nano-12b-v2-vl:free',                           inputPrice: 0, outputPrice: 0, vision: true  },
+    { name: 'openrouter/owl-alpha',                                          inputPrice: 0, outputPrice: 0              },
     { name: 'nousresearch/hermes-3-llama-3.1-405b:free',                     inputPrice: 0, outputPrice: 0              },
     { name: 'google/gemma-4-31b-it:free',                                    inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'openai/gpt-oss-120b:free',                                      inputPrice: 0, outputPrice: 0              },
@@ -40,13 +42,11 @@ export class AnalysisService {
     // nemotron-ultra: reasoning model, NVIDIA free tier returns HTTP 200+{error:500} intermittently — needs high maxTokens
     { name: 'nvidia/nemotron-3-ultra-550b-a55b:free',                        inputPrice: 0, outputPrice: 0, maxTokens: 1500 },
     { name: 'nvidia/nemotron-3-super-120b-a12b:free',                        inputPrice: 0, outputPrice: 0              },
-    { name: 'openrouter/owl-alpha',                                          inputPrice: 0, outputPrice: 0              },
     { name: 'meta-llama/llama-3.3-70b-instruct:free',                        inputPrice: 0, outputPrice: 0              },
     { name: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', inputPrice: 0, outputPrice: 0              },
     { name: 'google/gemma-4-26b-a4b-it:free',                               inputPrice: 0, outputPrice: 0, vision: true  },
     { name: 'nvidia/nemotron-3-nano-30b-a3b:free',                           inputPrice: 0, outputPrice: 0              },
     { name: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',            inputPrice: 0, outputPrice: 0              },
-    { name: 'nvidia/nemotron-nano-12b-v2-vl:free',                           inputPrice: 0, outputPrice: 0, vision: true  },
     // laguna models are deep reasoning models: content=null, JSON only produced after long thinking — needs high maxTokens
     { name: 'poolside/laguna-m.1:free',                                      inputPrice: 0, outputPrice: 0, maxTokens: 1500 },
     { name: 'openai/gpt-oss-20b:free',                                       inputPrice: 0, outputPrice: 0              },
