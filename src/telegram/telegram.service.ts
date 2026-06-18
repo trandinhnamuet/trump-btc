@@ -29,6 +29,8 @@ export class TelegramService implements OnModuleInit {
   private pollingWatchdogTimer: ReturnType<typeof setInterval> | null = null;
   // Thời điểm cuối polling_error xảy ra
   private lastPollingErrorAt = 0;
+  // Thời điểm polling được (re)start lần cuối — để phát hiện zombie state
+  private pollingStartedAt = 0;
 
   // Đường dẫn file danh sách users
   private readonly usersFile = path.join(process.cwd(), 'data', 'users.json');
@@ -901,6 +903,7 @@ export class TelegramService implements OnModuleInit {
 
     // Watchdog: mỗi 2 phút kiểm tra nếu polling bị dừng thì khởi động lại
     this.pollingWatchdogTimer = setInterval(() => this.checkAndRestorePolling(), 2 * 60 * 1000);
+    this.pollingStartedAt = Date.now();
 
     this.logger.log('Telegram Bot đã khởi tạo thành công (polling mode enabled)');
   }
@@ -914,13 +917,22 @@ export class TelegramService implements OnModuleInit {
     }, 5000);
   }
 
-  /** Kiểm tra polling còn hoạt động không; nếu tắt thì khởi động lại */
+  /** Kiểm tra polling còn hoạt động không; nếu tắt hoặc zombie thì khởi động lại */
   private async checkAndRestorePolling() {
     if (!this.bot) return;
     const isPolling = (this.bot as any).isPolling?.() ?? false;
     if (!isPolling) {
       this.logger.warn('⚠️ Phát hiện Telegram polling đã dừng (watchdog). Đang khởi động lại...');
-      await this.restartPolling('watchdog');
+      await this.restartPolling('watchdog: stopped');
+      return;
+    }
+    // Zombie detection: isPolling()=true nhưng không nhận được updates
+    // Xảy ra sau EFATAL + restart mà mạng chưa phục hồi hoàn toàn
+    // Fix: force restart mỗi 30 phút để đảm bảo polling luôn tươi
+    const THIRTY_MIN = 30 * 60 * 1000;
+    if (this.pollingStartedAt > 0 && Date.now() - this.pollingStartedAt > THIRTY_MIN) {
+      this.logger.log('🔄 Periodic polling restart (30 phút, phòng zombie state)');
+      await this.restartPolling('watchdog: periodic 30m');
     }
   }
 
@@ -932,6 +944,7 @@ export class TelegramService implements OnModuleInit {
     } catch (_) { /* bỏ qua lỗi stop */ }
     try {
       await this.bot.startPolling();
+      this.pollingStartedAt = Date.now();
       this.logger.log(`🔄 Telegram polling đã được khởi động lại (${reason})`);
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
