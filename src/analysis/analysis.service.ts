@@ -372,8 +372,13 @@ export class AnalysisService {
       ? '[Bài đăng chỉ có hình ảnh, không có văn bản]'
       : content;
 
+    const marketCtx = `BTC hiện tại: $${market.currentPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })} | 24h: ${market.change24h >= 0 ? '+' : ''}${market.change24h.toFixed(2)}% | 7d: ${market.change7d >= 0 ? '+' : ''}${market.change7d.toFixed(2)}% | 30d: ${market.change30d >= 0 ? '+' : ''}${market.change30d.toFixed(2)}% | Cách đỉnh 52w: ${market.pctFromHigh52w.toFixed(1)}% | Xu hướng: ${market.trendLabel}`;
+
     return `Tổng thống Trump vừa post 1 post trên Truth Social với nội dung: ${contentSection}
-Bạn là 1 chuyên gia tài chính có kinh nghiệm nhiều năm trong thị trường crypto, hãy đánh giá tỉ lệ % khả năng tác động giá BTC của bài viết trên, và tác động tăng hay giảm.
+
+Bối cảnh thị trường: ${marketCtx}
+
+Bạn là 1 chuyên gia tài chính có kinh nghiệm nhiều năm trong thị trường crypto. Hãy đánh giá tình hình kinh tế thế giới, các sự kiện và xu hướng chung. Sau đó áp vào tình hình thị trường Crypto để nhận định. Từ đó hãy đánh giá tỉ lệ % khả năng tác động giá BTC của bài viết trên trong bối cảnh chung đã đánh giá, và tác động đó là tăng hay giảm.
 
 Trả về ONLY valid JSON:
 {
