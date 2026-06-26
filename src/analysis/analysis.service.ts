@@ -308,7 +308,7 @@ export class AnalysisService {
             },
           ],
           temperature: 0.1,
-          max_tokens: 600,
+          max_tokens: 800,
         },
         {
           headers: {
@@ -382,10 +382,10 @@ Bạn là 1 chuyên gia tài chính có kinh nghiệm nhiều năm trong thị t
 
 Trả về ONLY valid JSON:
 {
-  "summary": "Tóm tắt ngắn nội dung bài viết",
+  "summary": "Tóm tắt nội dung bài viết, tối đa 40 từ",
   "btcInfluenceProbability": <số nguyên 0-100>,
   "btcDirection": <"increase" | "decrease">,
-  "reasoning": "Giải thích ngắn gọn tác động đến BTC"
+  "reasoning": "Giải thích tác động đến BTC, tối đa 60 từ"
 }`;
   }
 
