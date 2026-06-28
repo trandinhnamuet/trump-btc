@@ -382,10 +382,10 @@ Bạn là 1 chuyên gia tài chính có kinh nghiệm nhiều năm trong thị t
 
 Trả về ONLY valid JSON:
 {
-  "summary": "Tóm tắt nội dung bài viết, tối đa 40 từ",
+  "summary": "Tóm tắt nội dung bài viết, khoảng 35-40 từ, đủ bối cảnh",
   "btcInfluenceProbability": <số nguyên 0-100>,
   "btcDirection": <"increase" | "decrease">,
-  "reasoning": "Giải thích tác động đến BTC, tối đa 60 từ"
+  "reasoning": "Phân tích tác động đến BTC, khoảng 50-60 từ, đủ lý luận"
 }`;
   }
 
