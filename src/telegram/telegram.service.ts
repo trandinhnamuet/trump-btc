@@ -445,12 +445,14 @@ export class TelegramService implements OnModuleInit {
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
         `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
         `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
-        `💳 /credit — Xem số credit OpenAI còn lại\n` +
+        `💳 /credit — Xem trạng thái API key OpenRouter\n` +
+        `🎯 /calib — Trạng thái hiệu chuẩn: base rate + đường hiệu chuẩn từng model\n` +
+        `🔁 /refit — Chấm điểm các dự đoán đã quá 1h rồi fit lại đường hiệu chuẩn\n` +
         `🗑 /skipped — Danh sách bài bị bỏ qua do quá 1h trong hàng chờ phân tích\n` +
-        `🤖 /model — Xem model AI đang dùng\n` +
-        `📋 /models — Danh sách model theo thứ tự ưu tiên (fallback queue)\n` +
+        `🤖 /model — Xem model AI đang dùng (mặc định: ensemble)\n` +
+        `📋 /models — Danh sách model theo thứ tự ưu tiên\n` +
         `📋 /model-list — Danh sách model có thể dùng\n` +
-        `🔀 /model &lt;tên&gt; — Đổi sang model khác\n` +
+        `🔀 /model &lt;tên&gt; — Chạy model đơn lẻ; /model ensemble để quay lại\n` +
         `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
         `📋 /menu — Hiển thị danh sách lệnh này`;
       await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -609,7 +611,12 @@ export class TelegramService implements OnModuleInit {
           { parse_mode: 'HTML' },
         );
 
-        const analysis = await this.analysisService.analyzePost(latestPost.content, latestPost.mediaUrls);
+        const analysis = await this.analysisService.analyzePost(
+          latestPost.content,
+          latestPost.mediaUrls,
+          latestPost.id,
+          latestPost.createdAt,
+        );
         const btcPrice = await this.btcPriceService.getCurrentPrice();
 
         // Cập nhật lại phân tích trong storage
@@ -623,6 +630,8 @@ export class TelegramService implements OnModuleInit {
           matchedRules: analysis.matchedRules,
           btcDirection: analysis.btcDirection,
           reasoning: analysis.reasoning,
+          modelUsed: analysis.modelUsed,
+          scoring: analysis.scoring,
         });
 
         const post: TruthSocialPost = {
@@ -830,6 +839,54 @@ export class TelegramService implements OnModuleInit {
         const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(`❌ Lỗi /credit: ${errMsg}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi lấy credit: ${errMsg}`);
+      }
+    });
+
+    // Handle /calib command — show calibration state (base rate, đường hiệu chuẩn từng model)
+    this.bot.onText(/^\/calib(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const summary = this.analysisService.calibrationSummary();
+        await this.bot?.sendMessage(
+          chatId,
+          `🎯 <b>Trạng thái hiệu chuẩn</b>\n\n${this.escapeHtml(summary)}\n\n` +
+            `<i>Con số % = xác suất BTC biến động bất thường (|z| ≥ 2) trong 1h.\n` +
+            `Base rate là tần suất nền — mọi dự đoán đều xoay quanh nó.</i>`,
+          { parse_mode: 'HTML' },
+        );
+        this.logger.log(`✅ /calib: responded to ${msg.chat.first_name || chatId}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /calib: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
+    // Handle /refit command — chạy vòng lặp đóng ngay: gắn nhãn các dự đoán quá 1h rồi fit lại
+    this.bot.onText(/^\/refit(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang lấy giá thật từ Binance và fit lại đường hiệu chuẩn...');
+        const r = await this.analysisService.refitCalibration();
+        const fitted = r.perModel.filter((p) => p.fitted);
+        const lines = [
+          `🎯 <b>Refit hoàn tất</b>`,
+          ``,
+          `Nhãn mới gắn: ${r.newlyLabeled}`,
+          `Tổng bài có nhãn: ${r.totalLabeled}`,
+          `Base rate: ${(r.baseRate * 100).toFixed(1)}%`,
+          `P(tăng | có biến động): ${(r.upRateGivenMove * 100).toFixed(1)}%`,
+          ``,
+          fitted.length
+            ? `Model đã fit:\n${fitted.map((p) => `• ${this.escapeHtml(p.model)} — n=${p.n}, Brier=${p.brier.toFixed(3)}`).join('\n')}`
+            : `Chưa model nào đủ mẫu (cần ≥ 30 nhãn/model) để fit đường hiệu chuẩn.`,
+        ];
+        await this.bot?.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+        this.logger.log(`✅ /refit: ${r.newlyLabeled} nhãn mới, ${fitted.length} model fitted`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /refit: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
@@ -1193,17 +1250,6 @@ export class TelegramService implements OnModuleInit {
       preview = '[Không có nội dung]';
     }
 
-    // Breakdown line: model used / severity / market
-    const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
-    const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
-    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
-    const breakdownLine = `<i>🤖 <code>${modelLabel}</code>\n💡 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
-
-    // Hard rule warning
-    const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length
-      ? `\n⚠️ <b>HARD RULE:</b> <i>${analysis.matchedRules.join(', ')}</i>`
-      : '';
-
     return `${header}
 
 📢 <b>Bài viết gốc:</b>
@@ -1214,14 +1260,47 @@ ${analysis.summary}
 
 💡 <b>Lý do:</b> ${analysis.reasoning}
 
-📊 <b>Ensemble Score:</b>
+📊 <b>Xác suất BTC biến động bất thường trong 1h:</b>
 ${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
-${breakdownLine}${hardRuleLine}
+${this.buildBreakdown(analysis)}
 
 💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}
 
 🕐 <b>Đăng lúc:</b> ${postedAt}
 🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
+  }
+
+  /**
+   * Dòng chi tiết dưới thanh xác suất.
+   *
+   * Hiển thị base rate ngay cạnh con số dự đoán: không có mốc so sánh đó, 8% trông
+   * như "gần như chắc chắn không có gì", trong khi nếu base rate là 5% thì 8% là
+   * một tín hiệu thật. Cũng nói rõ con số đã được hiệu chuẩn trên nhãn thật hay
+   * mới chỉ là prior + bằng chứng.
+   */
+  private buildBreakdown(analysis: AnalysisResult): string {
+    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
+    const s = analysis.scoring;
+
+    if (!s) {
+      return `<i>🤖 <code>${modelLabel}</code> — bài bị gate loại, không gọi model</i>`;
+    }
+
+    const pct = (v: number) => `${Math.round(v * 100)}%`;
+    const source = s.calibrated ? 'đã hiệu chuẩn trên dữ liệu thật' : 'prior + bằng chứng (chưa đủ nhãn)';
+    const band = `${pct(s.pMoveLow)}–${pct(s.pMoveHigh)}`;
+    const nModels = Object.keys(s.pMoveByModel).length;
+
+    const rulesLine = analysis.matchedRules?.length
+      ? `\n🔍 Luật khớp: <i>${this.escapeHtml(analysis.matchedRules.join(', '))}</i>`
+      : '';
+
+    return (
+      `<i>🤖 <code>${modelLabel}</code> · ${nModels} model · ${s.promptVersion}\n` +
+      `📉 Tần suất nền: ${pct(s.baseRate)} — ${source}\n` +
+      `📐 Khoảng giữa các model: ${band} · đồng thuận ${pct(s.agreement)}\n` +
+      `🧭 P(tăng | có biến động): ${pct(s.pUp)}</i>${rulesLine}`
+    );
   }
 
   /**
@@ -1312,17 +1391,6 @@ ${breakdownLine}${hardRuleLine}
       directionDisplay = '─ TRUNG LẬP';
     }
 
-    // Breakdown line: model used / severity / market
-    const severityPct = Math.round((analysis.severityScore ?? 0) * 100);
-    const marketPct = Math.round((analysis.marketSignalScore ?? 0) * 100);
-    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
-    const breakdownLine = `<i>🤖 <code>${modelLabel}</code>\n💡 Model: ${analysis.btcInfluenceProbability}% | 🔍 Severity: ${severityPct}% | 📈 Market: ${marketPct}%</i>`;
-
-    // Hard rule warning
-    const hardRuleLine = analysis.hardRule && analysis.matchedRules?.length
-      ? `\n⚠️ <b>HARD RULE:</b> <i>${analysis.matchedRules.join(', ')}</i>`
-      : '';
-
     return `📋 <b>TEST PHÂN TÍCH</b>
 
 📝 <b>Nội dung:</b>
@@ -1333,9 +1401,9 @@ ${analysis.summary}
 
 💡 <b>Lý do:</b> ${analysis.reasoning}
 
-📊 <b>Ensemble Score:</b>
+📊 <b>Xác suất BTC biến động bất thường trong 1h:</b>
 ${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
-${breakdownLine}${hardRuleLine}
+${this.buildBreakdown(analysis)}
 
 💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}`;
   }

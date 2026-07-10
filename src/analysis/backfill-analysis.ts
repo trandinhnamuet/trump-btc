@@ -1,12 +1,19 @@
 /**
- * Backfill Script: Analyze existing posts that don't have analysis data yet.
- * Usage: npm run backfill:analysis
- * 
- * This script:
- * 1. Reads data/posts.json
- * 2. Finds posts without analysis data
- * 3. Calls Grok API to analyze each one
- * 4. Saves the analysis results back
+ * Backfill Script — TÀN DƯ CỦA v1, ĐÃ NGỪNG DÙNG.
+ *
+ * ⚠️ Script này viết điểm số theo thang v1 (chưa hiệu chuẩn, không có `modelUsed`,
+ * không có `scoring`) trở lại data/posts.json. Kể từ v2, posts.json là tập dữ liệu
+ * dùng để backtest và fit đường hiệu chuẩn — ghi điểm v1 vào đó sẽ trộn hai thang
+ * đo khác nhau và làm hỏng mọi kết luận rút ra từ `npm run backtest`.
+ *
+ * Ngoài ra prompt bên dưới chứa đúng lỗi thiết kế mà v2 loại bỏ:
+ * "Xác suất cao (70-100%)..." — hướng dẫn model rải điểm khắp thang 0-100, trong
+ * khi tần suất nền thực tế của một biến động bất thường chỉ khoảng 5%.
+ *
+ * Việc backfill giờ do PollingService.reprocessUnanalyzed() đảm nhiệm, dùng đúng
+ * pipeline production (ensemble + hiệu chuẩn).
+ *
+ * Chạy có chủ đích: `npm run backfill:analysis -- --force-legacy`
  */
 
 import * as fs from 'fs';
@@ -108,6 +115,17 @@ Hãy phân tích khách quan và chỉ trả về JSON theo đúng format yêu c
 
 async function backfillAnalysis() {
   try {
+    if (!process.argv.includes('--force-legacy')) {
+      console.log('⛔ Script backfill v1 đã ngừng dùng — nó ghi điểm chưa hiệu chuẩn vào posts.json');
+      console.log('   và sẽ làm hỏng tập dữ liệu backtest của hệ thống v2.');
+      console.log('');
+      console.log('   Backfill giờ chạy tự động qua PollingService khi khởi động app,');
+      console.log('   dùng đúng pipeline ensemble + hiệu chuẩn.');
+      console.log('');
+      console.log('   Nếu thực sự cần chạy bản cũ: npm run backfill:analysis -- --force-legacy');
+      process.exit(1);
+    }
+
     // Load .env
     const env = loadEnv();
     const apiKey = env.OPENAI_API_KEY;

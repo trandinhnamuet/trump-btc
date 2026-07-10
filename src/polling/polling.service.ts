@@ -25,6 +25,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
   // Flag để tránh chạy song song nếu lần poll trước chưa xong
   private isPolling = false;
   private isCheckingPrices = false;
+  private isRefitting = false;
 
   // Dynamic polling fields
   private pollTimer: NodeJS.Timeout | null = null;
@@ -120,8 +121,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       try {
         const btcPrice = record.btcPriceAtPost ?? null;
         // Backfill: bỏ qua mediaUrls vì URL ảnh Truth Social hết hạn nhanh → gây invalid_image_url
-        // Nếu bài chỉ có ảnh (không có text), analyzePost sẽ trả về 0% mà không tốn API call
-        const analysis = await this.analysisService.analyzePost(post.content, []);
+        // Nếu bài chỉ có ảnh (không có text), gate sẽ chặn mà không tốn API call
+        const analysis = await this.analysisService.analyzePost(post.content, [], post.id, post.createdAt);
         this.storageService.updatePost(post.id, {
           summary: analysis.summary,
           btcInfluenceProbability: analysis.btcInfluenceProbability,
@@ -132,6 +133,8 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
           matchedRules: analysis.matchedRules,
           btcDirection: analysis.btcDirection,
           reasoning: analysis.reasoning,
+          modelUsed: analysis.modelUsed,
+          scoring: analysis.scoring,
         });
         this.logger.log(
           `🔄 Backfill bài ${post.id}: model=${analysis.btcInfluenceProbability}% ensemble=${analysis.ensembleProbability}% (${analysis.btcDirection})${
@@ -385,9 +388,14 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     this.storageService.setLastPostId(post.id);
     this.logger.debug(`lastPostId cập nhật → ${post.id}`);
 
-    // Bước 3: Phân tích bằng OpenAI
+    // Bước 3: Phân tích bằng ensemble + hiệu chuẩn
     try {
-      const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
+      const analysis = await this.analysisService.analyzePost(
+        post.content,
+        post.mediaUrls,
+        post.id,
+        post.createdAt,
+      );
 
       // Cập nhật record với kết quả phân tích
       // ⭐ LƯU Ý: Phân tích được LƯU VÀO STORAGE cho TẤT CẢ BÀI, không chỉ những bài > ngưỡng
@@ -401,11 +409,16 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         matchedRules: analysis.matchedRules,
         btcDirection: analysis.btcDirection,
         reasoning: analysis.reasoning,
+        modelUsed: analysis.modelUsed,
+        scoring: analysis.scoring,
       });
+      const s = analysis.scoring;
       this.logger.log(
-        `📊 Đã lưu phân tích bài ${post.id}: model=${analysis.btcInfluenceProbability}% ensemble=${analysis.ensembleProbability}% (${analysis.btcDirection})${
-          analysis.hardRule ? ' ⚠️ HARD RULE' : ''
-        }`,
+        `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})` +
+          (s
+            ? ` | base rate=${(s.baseRate * 100).toFixed(1)}% | ${s.calibrated ? 'isotonic' : 'prior+bằng chứng'}` +
+              ` | đồng thuận=${(s.agreement * 100).toFixed(0)}%`
+            : ' | gate loại'),
       );
 
       // Bước 4: Luôn gửi Telegram. Dùng ensembleProbability cho quyết định silent vs. alert
@@ -434,7 +447,42 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Log tóm tắt độ chính xác khi đã có đủ dữ liệu 7 ngày.
+   * CRON JOB 3: mỗi giờ — vòng lặp đóng của hệ thống hiệu chuẩn.
+   *
+   * Lấy giá thật từ Binance cho các dự đoán đã quá mốc 1 giờ, gắn nhãn
+   * (|z| >= 2 hay không), rồi fit lại đường hiệu chuẩn của từng model và cập nhật
+   * base rate. Không có bước này, mọi con số % chỉ là phỏng đoán không kiểm chứng.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async refitCalibration() {
+    if (this.isRefitting) return;
+    this.isRefitting = true;
+    try {
+      const report = await this.analysisService.refitCalibration();
+      if (report.newlyLabeled > 0) {
+        const fitted = report.perModel.filter(p => p.fitted);
+        this.logger.log(
+          `🎯 [HIỆU CHUẨN] +${report.newlyLabeled} nhãn mới | ${report.totalLabeled} bài có nhãn | ` +
+            `base rate=${(report.baseRate * 100).toFixed(1)}% | P(up|moved)=${(report.upRateGivenMove * 100).toFixed(1)}%` +
+            (fitted.length
+              ? ` | đã fit: ${fitted.map(p => `${p.model.split('/').pop()} (n=${p.n}, Brier=${p.brier.toFixed(3)})`).join(', ')}`
+              : ' | chưa model nào đủ mẫu để fit'),
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Lỗi refit hiệu chuẩn: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.isRefitting = false;
+    }
+  }
+
+  /**
+   * Log tham khảo khi đã có đủ dữ liệu 7 ngày.
+   *
+   * Lưu ý: đây KHÔNG phải thước đo chính thức. Sự kiện đích của hệ thống là biến
+   * động bất thường trong 1 giờ (|z| >= 2), được chấm bởi refitCalibration().
+   * Ngưỡng ±1% sau 7 ngày dưới đây không tính đến độ biến động của chế độ thị
+   * trường, nên gần như luôn "trúng" khi vol cao và luôn "trượt" khi vol thấp.
    */
   private logAccuracySummary(post: PostRecord, btcPrice7d: number, currentPrice: number): void {
     if (!post.btcPriceAtPost || !post.btcInfluenceProbability) return;
@@ -445,7 +493,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     const isCorrect = predictedDirection === actualDirection;
 
     this.logger.log(
-      `📊 [ĐỘ CHÍNH XÁC] Bài ${post.id}: ` +
+      `📊 [7 NGÀY, tham khảo] Bài ${post.id}: ` +
       `Dự đoán=${predictedDirection} (${post.btcInfluenceProbability}%), ` +
       `Thực tế=${actualDirection} (${change7d.toFixed(2)}% sau 7 ngày), ` +
       `Kết quả=${isCorrect ? '✅ ĐÚNG' : '❌ SAI'}`,

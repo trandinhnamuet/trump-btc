@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
-import { AnalysisService } from './analysis.service';
+import { CalibrationModule } from '../calibration/calibration.module';
 import { MarketSignalModule } from '../market-signal/market-signal.module';
+import { SeverityModule } from '../severity/severity.module';
+import { AnalysisService } from './analysis.service';
+import { EnsembleService } from './ensemble.service';
 
 @Module({
-  imports: [MarketSignalModule],
-  providers: [AnalysisService],
+  imports: [MarketSignalModule, SeverityModule, CalibrationModule],
+  providers: [AnalysisService, EnsembleService],
   exports: [AnalysisService],
 })
 export class AnalysisModule {}
-
