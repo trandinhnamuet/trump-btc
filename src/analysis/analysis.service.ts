@@ -138,6 +138,15 @@ export class AnalysisService {
     return { count: this.dailyCallCount, limit: this.DAILY_LIMIT, date: this.dailyCallDate };
   }
 
+  /**
+   * Đếm một API call phát sinh ngoài AnalysisService (detector, lệnh thủ công).
+   * Dùng chung một bộ đếm để tổng mức tiêu thụ ngày không vượt hạn mức.
+   * Throws DailyLimitExceededException khi vượt.
+   */
+  countExternalCall(): void {
+    this.checkDailyLimit();
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Model management
   // ─────────────────────────────────────────────────────────────────────────

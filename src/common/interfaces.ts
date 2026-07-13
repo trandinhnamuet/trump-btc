@@ -50,6 +50,37 @@ export interface AnalysisResult {
   scoring?: ScoringDetail;      // vắng mặt khi bài bị gate loại
 }
 
+/**
+ * Kết quả của máy phát hiện sự kiện lớp A (detector) — kênh cảnh báo rời rạc,
+ * tách hẳn khỏi thang xác suất đã hiệu chuẩn. Xem src/detector/taxonomy.ts.
+ */
+export interface DetectionResult {
+  alert: boolean;
+  /** A1..A5, hoặc null khi không thuộc lớp nào */
+  eventClass: string | null;
+  /** tên tiếng Việt của lớp, để hiển thị */
+  eventClassName: string | null;
+  /** nguồn kích hoạt alert */
+  source: 'tripwire' | 'llm_consensus' | null;
+  /** các tripwire rule đã khớp */
+  matchedRules: string[];
+  /** 0-1; 1 = hoàn toàn mới so với các bài 7 ngày gần nhất */
+  novelty: number;
+  /** true = bài lặp lại chủ đề gần đây → không alert dù khớp lớp */
+  isRepeat: boolean;
+  /** lý do alert bị chặn dù tín hiệu khớp */
+  suppressedBy: 'repeat' | 'dedup' | null;
+  /** phiếu phân loại của từng model (rỗng khi tripwire đã bắn hoặc rules-only) */
+  votes: Array<{
+    model: string;
+    eventClass: string;
+    confirmed: boolean;
+    newAction: boolean;
+  }>;
+  /** reasoning của một phiếu đại diện, để hiển thị */
+  reasoning?: string;
+}
+
 /** Thông tin người dùng Telegram */
 export interface TelegramUser {
   chatId: string;
@@ -90,6 +121,9 @@ export interface PostRecord {
    */
   modelUsed?: string;
   scoring?: ScoringDetail;
+
+  /** Kết quả máy phát hiện sự kiện lớp A (chỉ có ở bài xử lý qua luồng poll tươi) */
+  detection?: DetectionResult;
 
   // Giá BTC tại các mốc thời gian
   btcPriceAtPost?: number; // Giá lúc đăng bài

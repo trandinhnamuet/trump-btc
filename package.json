@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "backfill:analysis": "npx ts-node -r tsconfig-paths/register src/analysis/backfill-analysis.ts .env",
     "dataset:build": "npx ts-node src/eval/build-dataset.ts",
-    "backtest": "npx ts-node src/eval/backtest.ts"
+    "backtest": "npx ts-node src/eval/backtest.ts",
+    "detector:eval": "npx ts-node src/eval/eval-detector.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

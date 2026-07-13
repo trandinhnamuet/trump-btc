@@ -3,8 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import TelegramBot = require('node-telegram-bot-api');
-import { AnalysisResult, PostRecord, TruthSocialPost, UserConfig } from '../common/interfaces';
+import { AnalysisResult, DetectionResult, PostRecord, TruthSocialPost, UserConfig } from '../common/interfaces';
 import { AnalysisService } from '../analysis/analysis.service';
+import { ENSEMBLE_POOL } from '../analysis/ensemble.service';
+import { DetectorService } from '../detector/detector.service';
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { StorageService } from '../storage/storage.service';
 import { TruthSocialService } from '../truth-social/truth-social.service';
@@ -40,12 +42,24 @@ export class TelegramService implements OnModuleInit {
   // Ngưỡng mặc định toàn cục từ .env (dùng khi user chưa set /thr)
   private readonly globalThreshold: number;
 
+  /**
+   * Ngưỡng "đáng chú ý" cho /check, /check-all, /check2.
+   *
+   * v1 dùng 30% vì model chấm trung bình ~16% (đã lệch cao gấp 2 lần thực tế —
+   * xem BAO-CAO-CO-CHE-V2.md). Ở v2, xác suất đã hiệu chuẩn quanh base rate thật
+   * (~5-8%), trần cứng 85% (P_MOVE_CAP trong calibration.service.ts) — giữ 30%
+   * sẽ khiến ba lệnh này gần như luôn rỗng. 15% ≈ 2-3 lần base rate, đủ để lọc
+   * nhiễu nhưng vẫn bắt được các bài có bằng chứng rõ (severity/anchor cao).
+   */
+  private readonly CHECK_THRESHOLD_PCT = 15;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
     private readonly storageService: StorageService,
     private readonly truthSocialService: TruthSocialService,
+    private readonly detectorService: DetectorService,
   ) {
     this.globalThreshold = parseInt(
       this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '0',
@@ -435,11 +449,12 @@ export class TelegramService implements OnModuleInit {
       const message = `📋 <b>DANH SÁCH LỆNH</b>\n\n` +
         `🟢 /start — Đăng ký nhận alert tự động từ Trump\n` +
         `💰 /btc — Xem giá BTC hiện tại\n` +
-        `📊 /check — 7 bài viết mới nhất có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
-        `📊 /check-all — Tất cả bài viết có xác suất ảnh hưởng BTC &gt;=30% (kèm link)\n` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất\n` +
+        `📊 /check — 7 bài viết mới nhất có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% (kèm link)\n` +
+        `📊 /check-all — Tất cả bài viết có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% (kèm link)\n` +
+        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% trong 10 ngày gần nhất\n` +
         `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
         `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
+        `🛰 /detect &lt;nội dung&gt; — Kiểm tra sự kiện lớp A (tripwire + phân loại 5 model)\n` +
         `🔬 /testall &lt;nội dung&gt; — So sánh kết quả từ tất cả models (kèm thời gian)\n` +
         `🔬 /testallfull &lt;nội dung&gt; — Giống /testall nhưng thêm giải thích của từng model\n` +
         `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
@@ -476,21 +491,21 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check-all command - show all posts with rate >= 30%
+    // Handle /check-all command - show all posts with rate >= CHECK_THRESHOLD_PCT
     this.bot.onText(/^\/check-all$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30)
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT)
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30%.');
+          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}%.`);
           return;
         }
 
-        const message = this.buildCheckMessage(filtered, 30);
+        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
         await this.bot?.sendMessage(chatId, message, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
@@ -502,22 +517,22 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check command - show 7 most recent posts with rate >= 30%
+    // Handle /check command - show 7 most recent posts with rate >= CHECK_THRESHOLD_PCT
     this.bot.onText(/^\/check$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30)
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT)
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
           .slice(0, 7);
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30%.');
+          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}%.`);
           return;
         }
 
-        const message = this.buildCheckMessage(filtered, 30);
+        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
         await this.bot?.sendMessage(chatId, message, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
@@ -559,7 +574,7 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check2 command (last 10 days only, rate >= 30%)
+    // Handle /check2 command (last 10 days only, rate >= CHECK_THRESHOLD_PCT)
     this.bot.onText(/^\/check2$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
@@ -568,15 +583,15 @@ export class TelegramService implements OnModuleInit {
 
         const posts = this.storageService.getAllPosts();
         const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= 30 && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
+          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=30% trong 10 ngày gần nhất.');
+          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% trong 10 ngày gần nhất.`);
           return;
         }
 
-        const message = this.buildCheckMessage(filtered, 30);
+        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
         await this.bot?.sendMessage(chatId, message, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
@@ -842,6 +857,61 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // Handle /detect command — chạy máy phát hiện sự kiện lớp A trên nội dung bất kỳ
+    this.bot.onText(/^\/detect(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const content = match?.[1]?.trim();
+
+      if (!content) {
+        await this.bot?.sendMessage(
+          chatId,
+          'ℹ️ Dùng: <code>/detect &lt;nội dung&gt;</code> — kiểm tra bài có thuộc sự kiện lớp A (tripwire + phân loại 5 model) không.',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang chạy detector (tripwire + checklist 5 model)...');
+        const sevenDaysAgo = Date.now() - 7 * 24 * 3_600_000;
+        const recentContents = this.storageService
+          .getAllPosts()
+          .filter(p => new Date(p.createdAt).getTime() >= sevenDaysAgo)
+          .map(p => p.content);
+
+        const d = await this.detectorService.detect(
+          content,
+          recentContents,
+          () => this.analysisService.countExternalCall(),
+          { skipDedup: true }, // lệnh thủ công: không ghi dedup, không chặn alert thật sau đó
+        );
+
+        const votesStr = d.votes.length
+          ? d.votes
+              .map(v => `• <code>${this.escapeHtml(v.model.split('/').pop() ?? v.model)}</code>: ${v.eventClass}${v.confirmed ? ' ✓xác nhận' : ''}${v.newAction ? ' ★mới' : ''}`)
+              .join('\n')
+          : '<i>(tripwire đã quyết định — không cần gọi model)</i>';
+
+        const lines = [
+          d.alert
+            ? `🚨 <b>PHÁT HIỆN SỰ KIỆN LỚP ${d.eventClass}</b> — ${this.escapeHtml(d.eventClassName ?? '')}`
+            : `✅ <b>Không thuộc sự kiện lớp A</b>${d.suppressedBy ? ` <i>(tín hiệu khớp nhưng bị chặn: ${d.suppressedBy === 'repeat' ? 'bài lặp lại chủ đề gần đây' : 'đã alert lớp này trong 24h'})</i>` : ''}`,
+          ``,
+          `🧩 Tripwire: ${d.matchedRules.length ? d.matchedRules.map(r => `<code>${r}</code>`).join(', ') : 'không khớp'}`,
+          `🗳 Phiếu model:\n${votesStr}`,
+          `🆕 Độ mới so với 7 ngày: ${Math.round(d.novelty * 100)}%`,
+        ];
+        if (d.reasoning) lines.push(`💡 <i>${this.escapeHtml(d.reasoning.substring(0, 300))}</i>`);
+
+        await this.bot?.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
+        this.logger.log(`✅ /detect: alert=${d.alert} class=${d.eventClass ?? '-'}`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /detect: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
     // Handle /calib command — show calibration state (base rate, đường hiệu chuẩn từng model)
     this.bot.onText(/^\/calib(?:@[\w_]+)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
@@ -921,23 +991,30 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /models command - show priority-ordered model list
+    // Handle /models command - show ensemble pool priority order
     this.bot.onText(/^\/models(?:@[\w_]+)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
       const list = this.analysisService.getAvailableModels() as Array<{ name: string; vision?: boolean; maxTokens?: number }>;
       const current = this.analysisService.getCurrentModel();
+      const isSingleModelMode = !current.startsWith('ensemble');
       const lines = list.map((m, i) => {
-        const isActive = m.name === current;
+        const isActive = isSingleModelMode && m.name === current;
+        const poolIdx = ENSEMBLE_POOL.indexOf(m.name);
         const vision = m.vision ? ' 📷' : '';
         const reasoning = m.maxTokens && m.maxTokens > 500 ? ` 🧠${m.maxTokens}t` : '';
+        const poolMark = poolIdx >= 0 ? ` 🎯pool#${poolIdx + 1}` : '';
         const mark = isActive ? ' ✅ <b>(đang dùng)</b>' : '';
-        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${reasoning}${mark}`;
+        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${reasoning}${poolMark}${mark}`;
       });
       await this.bot?.sendMessage(
         chatId,
-        `🤖 <b>DANH SÁCH MODEL (thứ tự ưu tiên fallback)</b>\n\n` +
-        `Khi model bị lỗi (429/404/empty) → tự động fallback xuống model tiếp theo.\n` +
-        `📷 = vision (phân tích ảnh) · 🧠 = reasoning (cần nhiều token)\n\n` +
+        `🤖 <b>DANH SÁCH MODEL</b>\n\n` +
+        `Chế độ mặc định là <b>ensemble</b>: mỗi bài lấy <b>3 model đầu tiên trong pool</b> ` +
+        `(đánh dấu 🎯pool#N) cho ra kết quả — model lỗi (429/404/timeout) bị bỏ qua, ` +
+        `thử model kế tiếp trong pool, dừng sau tối đa 5 lần thử. ` +
+        `Dùng <code>/model &lt;tên&gt;</code> để ép chạy 1 model đơn lẻ (chỉ để thử nghiệm — ` +
+        `làm mất tính ổn định thang đo giữa các bài), <code>/model ensemble</code> để quay lại mặc định.\n` +
+        `📷 = vision (phân tích ảnh) · 🧠 = reasoning (cần nhiều token) · 🎯pool#N = thứ tự ưu tiên trong ensemble pool\n\n` +
         lines.join('\n'),
         { parse_mode: 'HTML' },
       );
@@ -1143,6 +1220,67 @@ export class TelegramService implements OnModuleInit {
   }
 
   /**
+   * Gửi cảnh báo sự kiện lớp A đến TẤT CẢ users — bỏ qua ngưỡng /thr cá nhân,
+   * luôn có âm thanh. Đây là toàn bộ lý do detector tồn tại: sự kiện ~1 lần/quý,
+   * không user nào đăng ký bot này mà lại muốn lọc bỏ nó.
+   */
+  async sendDetectorAlert(
+    post: TruthSocialPost,
+    detection: DetectionResult,
+    btcPrice: number | null,
+  ): Promise<void> {
+    if (!this.bot) {
+      this.logger.warn('Telegram Bot chưa được cấu hình, bỏ qua detector alert');
+      return;
+    }
+    this.loadUsers();
+    if (this.users.length === 0) return;
+
+    const preview = post.content.length > 400 ? post.content.substring(0, 397) + '...' : post.content;
+    const sourceLabel =
+      detection.source === 'tripwire'
+        ? '⚡ bẫy luật (phát hiện tức thì)'
+        : `🗳 đồng thuận ${detection.votes.filter(v => v.eventClass === detection.eventClass && v.confirmed && v.newAction).length}/${detection.votes.length} model`;
+    const btcPriceText = btcPrice
+      ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+      : 'không lấy được';
+    const postedAt = new Date(post.createdAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+
+    const message = `🚨🚨🚨 <b>SỰ KIỆN LỚP ${detection.eventClass}</b> 🚨🚨🚨
+<b>${this.escapeHtml(detection.eventClassName ?? '')}</b>
+
+📢 <b>Bài viết:</b>
+<i>${this.escapeHtml(preview)}</i>
+
+🔍 <b>Nguồn phát hiện:</b> ${sourceLabel}${
+      detection.matchedRules.length ? `\n🧩 <b>Pattern khớp:</b> <code>${detection.matchedRules.join(', ')}</code>` : ''
+    }${detection.reasoning ? `\n💡 <i>${this.escapeHtml(detection.reasoning.substring(0, 250))}</i>` : ''}
+
+⚠️ <b>Kỳ vọng BTC biến động mạnh trong ~60 phút tới.</b>
+<b>HƯỚNG KHÔNG CHẮC CHẮN</b> — lịch sử cho thấy cả tin "tốt" cho crypto cũng có thể làm giá GIẢM (sell-the-news).
+
+💰 Giá BTC lúc phát hiện: <b>${btcPriceText}</b>
+🕐 Đăng lúc: ${postedAt}
+🔗 <a href="${post.url}">Xem bài viết gốc</a>
+
+<i>Phân tích chi tiết (%) sẽ được gửi sau ít phút.</i>`;
+
+    for (const user of this.users) {
+      try {
+        await this.bot.sendMessage(user.chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          disable_notification: false, // luôn kêu
+        });
+        this.logger.log(`🚨 Detector alert lớp ${detection.eventClass} → ${user.name} (${user.chatId})`);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Không thể gửi detector alert đến ${user.name}: ${errMsg}`);
+      }
+    }
+  }
+
+  /**
    * Gửi tin nhắn cảnh báo giới hạn API đến tất cả users.
    * Được gọi khi AnalysisService ném DailyLimitExceededException lần đầu trong ngày.
    */
@@ -1307,7 +1445,7 @@ ${this.buildBreakdown(analysis)}
    * Xây dựng tin nhắn bảng tổng hợp cho /check command.
    * Hiển thị các bài >= threshold kèm link và 4 cột giá BTC.
    */
-  private buildCheckMessage(posts: PostRecord[], threshold: number = 30): string {
+  private buildCheckMessage(posts: PostRecord[], threshold: number = 15): string {
     const fmtPrice = (p: number | null | undefined): string => {
       if (p == null) return '⏳';
       return `$${p.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;

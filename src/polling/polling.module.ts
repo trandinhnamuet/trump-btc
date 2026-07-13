@@ -5,6 +5,7 @@ import { AnalysisModule } from '../analysis/analysis.module';
 import { BtcPriceModule } from '../btc-price/btc-price.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { StorageModule } from '../storage/storage.module';
+import { DetectorModule } from '../detector/detector.module';
 
 /**
  * PollingModule: Import tất cả các module cần thiết cho orchestrator.
@@ -16,6 +17,7 @@ import { StorageModule } from '../storage/storage.module';
     BtcPriceModule,
     TelegramModule,
     StorageModule,
+    DetectorModule,
   ],
   providers: [PollingService],
 })

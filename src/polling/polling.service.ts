@@ -6,6 +6,7 @@ import { AnalysisService, DailyLimitExceededException } from '../analysis/analys
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { TelegramService } from '../telegram/telegram.service';
 import { StorageService } from '../storage/storage.service';
+import { DetectorService } from '../detector/detector.service';
 import { PostRecord, TruthSocialPost } from '../common/interfaces';
 
 /**
@@ -41,6 +42,7 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     private readonly telegramService: TelegramService,
     private readonly storageService: StorageService,
     private readonly configService: ConfigService,
+    private readonly detectorService: DetectorService,
   ) {
     this.threshold = parseInt(
       this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '90',
@@ -387,6 +389,34 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
     // Tránh tình huống app crash giữa chừng khiến poll sau tìm lại bài cũ
     this.storageService.setLastPostId(post.id);
     this.logger.debug(`lastPostId cập nhật → ${post.id}`);
+
+    // Bước 2.5: Máy phát hiện sự kiện lớp A — chạy TRƯỚC scoring vì tốc độ là
+    // sống còn với sự kiện thật (tripwire nổ trong mili-giây, checklist ~30s,
+    // trong khi ensemble scoring có thể mất vài phút với free tier chập chờn).
+    // Detector lỗi thì chỉ log, KHÔNG được chặn luồng chấm điểm phía sau.
+    try {
+      const sevenDaysAgo = Date.now() - 7 * 24 * 3_600_000;
+      const recentContents = this.storageService
+        .getAllPosts()
+        .filter(p => p.id !== post.id && new Date(p.createdAt).getTime() >= sevenDaysAgo)
+        .map(p => p.content);
+
+      const detection = await this.detectorService.detect(
+        post.content,
+        recentContents,
+        () => this.analysisService.countExternalCall(),
+      );
+      this.storageService.updatePost(post.id, { detection });
+
+      if (detection.alert) {
+        this.logger.warn(
+          `🚨🚨 [DETECTOR] Bài ${post.id} → SỰ KIỆN LỚP ${detection.eventClass} (${detection.eventClassName}) — gửi alert khẩn TRƯỚC khi chấm điểm`,
+        );
+        await this.telegramService.sendDetectorAlert(post, detection, btcPrice);
+      }
+    } catch (err) {
+      this.logger.error(`Detector lỗi bài ${post.id} (bỏ qua, tiếp tục chấm điểm): ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // Bước 3: Phân tích bằng ensemble + hiệu chuẩn
     try {
