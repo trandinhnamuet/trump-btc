@@ -123,7 +123,7 @@ Chi tiết thiết kế:
 
 Chỉ chạy khi tripwire im lặng. Đây là lưới recall thứ hai — bắt các sự kiện lớp A được diễn đạt theo cách pattern chưa lường trước.
 
-- **5 model free của OpenRouter, gọi song song, 1 call/model** (nemotron-nano-12b-vl, gpt-oss-20b, nemotron-3-super-120b, nemotron-3-nano-30b, gpt-oss-120b). Nhiệt độ **0.2** (phân loại cần ổn định), max 700 token, timeout 40 giây.
+- **5 model free của OpenRouter, gọi song song, 1 call/model.** Danh sách model **không hardcode** — do `ModelRegistryService` tự quản (xem §5.1). Nhiệt độ **0.2** (phân loại cần ổn định), max 700 token, timeout 40 giây.
 - Prompt yêu cầu **phân loại — không phải dự đoán giá** (đây là điểm mấu chốt: phân loại nhị phân/danh mục là việc LLM yếu vẫn làm ổn; ước lượng xác suất thì không — đã đo). JSON trả về, suy luận trước kết luận sau:
 
 ```json
@@ -141,7 +141,27 @@ Chỉ chạy khi tripwire im lặng. Đây là lưới recall thứ hai — bắ
 - **RAG-lite:** tối đa 8 bài trong 7 ngày gần nhất **giống bài mới nhất** (Jaccard, cắt 200 ký tự/bài) được đưa vào prompt, kèm chỉ dẫn *"nếu bài mới chỉ nhắc lại điều đã công bố trong các bài trên → newAction = false"*. Đây là hàng rào chặn loại báo giả phổ biến nhất: Trump ca ngợi lại hành động cũ bằng từ ngữ khác.
 - **Luật đồng thuận: ≥ 2 phiếu cùng lớp với `confirmed=true` VÀ `newAction=true`.** Model chết / JSON hỏng bị loại êm; hết hạn mức ngày → bỏ qua model đó, không sập luồng chính.
 
-Hiệu quả của hai hàng rào (đo trên golden set): decoy khó nhất — *ca ngợi Strategic Bitcoin Reserve đã công bố tuần trước* — cả 2 model nhận ra chủ đề A1, một model đánh dấu `confirmed`, nhưng **không model nào đánh dấu `newAction`** → chặn đúng. Decoy *dọa thuế có điều kiện* ("will not hesitate to impose...") — 2 model gắn A2 nhưng không `confirmed` → chặn đúng.
+Hiệu quả của hai hàng rào (đo trên golden set): decoy khó nhất — *ca ngợi Strategic Bitcoin Reserve đã công bố tuần trước* — model nhận ra chủ đề A1, có model đánh dấu `confirmed`, nhưng **không model nào đánh dấu `newAction`** → chặn đúng. Decoy *dọa thuế có điều kiện* ("will not hesitate to impose...") — model gắn A2 nhưng không `confirmed` → chặn đúng.
+
+### 5.1. Sổ đăng ký model free tự cập nhật (`model-registry.service.ts`)
+
+Danh sách model free của OpenRouter biến động liên tục — đo thực tế 2026-07-14: pool hardcode cũ chết 4/5 (gpt-oss-120b bị rút khỏi free tier, nemotron-vl timeout 122 giây, llama/qwen 429 triền miên). Vì vậy danh sách được tự động quản lý:
+
+```
+Mỗi 6 giờ (cron) + khi khởi động nếu dữ liệu cũ >12h:
+  1. GET openrouter.ai/api/v1/models
+     → lọc: pricing 0/0, output thuần text, context ≥ 16k,
+       loại meta-router / moderation / model sinh audio
+  2. PROBE từng ứng viên bằng MỘT CALL THẬT (~30 token, timeout 45s)
+     — "có trong danh sách" ≠ "gọi được"; chỉ model trả lời được mới vào sổ
+  3. Sắp theo độ trễ → persist data/free-models.json (sống sót qua restart)
+```
+
+- Checklist lấy **top 5 nhanh nhất, trần 3 model/nhà cung cấp** (giữ đa dạng phiếu bầu).
+- Probe toàn bộ free tier sập → **giữ danh sách cũ** thay vì ghi đè bằng rỗng.
+- Sổ trống (lần chạy đầu, mạng lỗi) → lui về `SEED_MODELS` đã xác minh tay (probe OK 2026-07-14: nemotron-3-super, nemotron-omni-reasoning, nemotron-ultra, gpt-oss-20b, gemma-4-26b).
+- Probe có trần riêng 200 call/ngày, **không** tính vào bộ đếm 500 của detector.
+- Xem/ép cập nhật qua Telegram: `/models` và `/models refresh`.
 
 ---
 
@@ -211,14 +231,15 @@ Khi thêm/sửa tripwire pattern: chạy `--rules-only` (tức thì) để kiể
 | Lệnh | Chức năng |
 |---|---|
 | `/start` | Đăng ký nhận alert |
-| `/detect <nội dung \| postId \| URL>` | Chạy detector thủ công — hiện tripwire khớp, phiếu từng model, độ mới |
+| `/test <nội dung giả tưởng \| postId \| URL>` | Thử detector với nội dung bất kỳ — hiện tripwire khớp, phiếu từng model, độ mới. Alias: `/detect` (hai lệnh như nhau) |
 | `/check` | 10 bài gần nhất đã kích hoạt alert, kèm giá BTC +1h/+1d/+7d và % thay đổi |
+| `/models` | Danh sách model free đang sống (kèm độ trễ, đánh dấu 🎯 model đang dùng); `/models refresh` để fetch + probe ngay |
 | `/btc` | Giá BTC hiện tại |
 | `/credit` | Trạng thái API key OpenRouter + số call hôm nay / 500 |
 | `/clear dd-mm-yyyy` | Xóa bài viết trước ngày |
 | `/menu` | Danh sách lệnh |
 
-Lưu ý: `/detect` thủ công **không ghi dedup** — để lần chạy thử không chặn alert thật ngay sau đó.
+Lưu ý: `/test` (`/detect`) thủ công **không ghi dedup** — để lần chạy thử không chặn alert thật ngay sau đó.
 
 ---
 
@@ -231,6 +252,7 @@ src/
 │   ├── novelty.ts                   tokenize / Jaccard / assessNovelty / topSimilar
 │   ├── gate.ts                      lọc heuristic 0-call (bài rỗng / URL / emoji thuần)
 │   ├── openrouter.client.ts         HTTP client, phân loại lỗi, extractJson
+│   ├── model-registry.service.ts    sổ model free tự cập nhật: fetch + probe mỗi 6h
 │   ├── detector.service.ts          tripwire → checklist → đồng thuận → dedup
 │   │                                + bộ đếm 500 call/ngày + /credit status
 │   └── detector.module.ts
@@ -246,6 +268,7 @@ src/
 
 data/  (không commit)
 ├── posts.json          mọi bài + kết quả detector + giá +1h/+1d/+7d
+├── free-models.json    sổ model free đang sống (registry persist, tái tạo được)
 ├── users.json          danh sách user Telegram
 └── alerts.log          lịch sử alert đã gửi (audit)
 ```
@@ -258,14 +281,14 @@ Kênh chấm điểm cũ (`src/analysis/`, `src/calibration/`, `src/severity/`, 
 
 **Giới hạn:**
 
-1. **Tripwire chỉ bắt được kiểu diễn đạt đã lường trước.** Sự kiện lớp A với cách diễn đạt hoàn toàn mới phải dựa vào tầng checklist — và tầng đó mù khi cả 5 model free cùng chết (đã xảy ra nhiều lần theo log server). Free tier OpenRouter là điểm yếu vận hành lớn nhất.
+1. **Tripwire chỉ bắt được kiểu diễn đạt đã lường trước.** Sự kiện lớp A với cách diễn đạt hoàn toàn mới phải dựa vào tầng checklist. Registry (§5.1) giảm nhẹ — không còn nhưng — rủi ro "cả 5 model cùng chết": danh sách tự thay model 429/rút-khỏi-free trong vòng tối đa 6 giờ thay vì nằm chết đến khi có người sửa code. Rủi ro còn lại: **toàn bộ free tier OpenRouter sập cùng lúc** (registry lúc đó giữ danh sách cũ, nhưng nếu danh sách cũ cũng chết thì checklist vẫn mù — tripwire là lưới cuối cùng, luôn sống vì 0 call).
 2. **Hướng biến động không đoán được** — by design, alert không hứa chiều.
 3. **Dedup in-memory** — restart có thể gây một alert trùng.
 4. **Golden set là bản dựng lại**, chưa phải nguyên văn 100% các bài thật.
 
 **Việc tiếp theo, xếp theo đòn bẩy:**
 
-1. **1 model trả phí rẻ làm backstop cho tầng checklist** (Haiku ~$1/tháng ở mức 5 call/bài thường) — loại bỏ điểm yếu free-tier-cùng-chết. Đòn bẩy lớn nhất còn lại.
+1. **1 model trả phí rẻ làm backstop cho tầng checklist** (Haiku ~$1/tháng ở mức 5 call/bài thường) — loại bỏ hoàn toàn rủi ro "free tier sập toàn bộ". Đòn bẩy lớn nhất còn lại.
 2. **Mở rộng golden set bằng nguyên văn thật** khi có archive Truth Social, thêm các sự kiện mới khi chúng xảy ra — golden set là hàng rào hồi quy duy nhất của hệ thống.
 3. **Bổ sung tripwire khi xuất hiện lớp sự kiện mới** (quy trình: thêm case vào golden set trước → viết pattern → `--rules-only` xác nhận recall + không thêm báo giả).
 4. Cân nhắc alert "lớp B" (mức chú ý, không âm thanh) cho các bài checklist đạt 1 phiếu — hiện đang bỏ qua hoàn toàn.
@@ -274,8 +297,9 @@ Kênh chấm điểm cũ (`src/analysis/`, `src/calibration/`, `src/severity/`, 
 
 - Detector **không có con số %** — cố ý. Hệ thống từng có và số liệu chứng minh nó vô giá trị (§1).
 - Bài lặp lại chủ đề không alert dù khớp pattern — cố ý (thị trường đã định giá bài đầu tiên).
-- `/detect` không ghi dedup — cố ý (lần chạy thử không được chặn alert thật).
+- `/test` (`/detect`) không ghi dedup — cố ý (lần chạy thử không được chặn alert thật).
 - Tripwire nổ thì bỏ qua LLM — cố ý (nhanh hơn, rẻ hơn, và tripwire chính xác hơn ở các ca nó bắt được).
+- Danh sách checklist **không hardcode trong code** — cố ý (§5.1). Registry probe thất bại toàn bộ → giữ danh sách cũ thay vì ghi đè rỗng, vì danh sách cũ luôn tốt hơn không có gì.
 
 ---
 
@@ -286,4 +310,5 @@ Kênh chấm điểm cũ (`src/analysis/`, `src/calibration/`, `src/severity/`, 
 | **v1** | 1 call LLM/bài, con số % thô gửi thẳng Telegram; hard-rule 88% | AUC 0.529, bias +8.1%, skill −0.378 → vô giá trị |
 | **v2** (`10187bd`) | Chấm điểm hiệu chuẩn: sự kiện đích \|z\|≥2, prompt thang neo, ensemble, isotonic, vòng lặp đóng | Hiệu chuẩn hoạt động (bias→+0.3%) nhưng không tạo ra tín hiệu |
 | **v2.1** (`63c363e`) | Thêm detector sự kiện lớp A chạy song song kênh chấm điểm | Recall 7/7, báo giả 0/12 trên golden set |
-| **v3** (hiện tại) | **Xóa toàn bộ kênh chấm điểm** — detector là trái tim duy nhất; bài thường thành tin feed im lặng | Golden set giữ nguyên 7/7, 0/12 sau phẫu thuật |
+| **v3** (`b18ee8e`) | **Xóa toàn bộ kênh chấm điểm** — detector là trái tim duy nhất; bài thường thành tin feed im lặng | Golden set giữ nguyên 7/7, 0/12 sau phẫu thuật |
+| **v3.1** (hiện tại) | `ModelRegistryService`: danh sách checklist tự fetch + probe thật mỗi 6h thay vì hardcode; lệnh `/models` + `/models refresh`; `/test` alias cho `/detect` để thử nội dung giả tưởng | Đo thực tế: pool cũ chết 4/5; danh sách mới sau probe 11/19 model free sống, recall giữ 7/7 |

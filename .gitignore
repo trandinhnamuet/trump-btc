@@ -82,18 +82,12 @@ response.json
 # TypeScript build info (build artifact)
 tsconfig.build.tsbuildinfo
 
-# Cache nến Binance (lớn, tái tạo được bằng npm run dataset:build)
+# Sổ đăng ký model free — runtime state, tái tạo được bằng ModelRegistryService
+data/free-models.json
+
+# Tàn dư kênh chấm điểm đã xóa (v3) — không còn tool nào tạo/dùng, giữ local nếu có sẵn
 data/klines/
-
-# Tập dữ liệu có nhãn (tái tạo được)
 data/labeled.json
-
-# Trạng thái hiệu chuẩn runtime — tích lũy trên server, KHÔNG commit bản local để tránh đè
-data/calibration.json
-data/calibration-verify.json
-
-# Bài bị bỏ qua do hết hạn (runtime state)
-data/skipped-analysis.json
 
 # SSH credentials của server — KHÔNG BAO GIỜ commit
 server.txt

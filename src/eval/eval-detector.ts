@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConfigService } from '@nestjs/config';
 import { DetectorService } from '../detector/detector.service';
+import { ModelRegistryService } from '../detector/model-registry.service';
 import { GOLDEN_CASES } from './golden-set';
 
 // Nạp .env thủ công (chạy ngoài Nest)
@@ -30,7 +31,10 @@ if (fs.existsSync(envPath)) {
 const rulesOnly = process.argv.includes('--rules-only');
 
 async function main() {
-  const detector = new DetectorService(new ConfigService());
+  const config = new ConfigService();
+  // Ngoài Nest nên onModuleInit không chạy → registry trống → checklist dùng
+  // SEED_MODELS đã xác minh tay. Tất định, không tốn probe call.
+  const detector = new DetectorService(config, new ModelRegistryService(config));
 
   console.log('═'.repeat(78));
   console.log(` ĐÁNH GIÁ DETECTOR — ${rulesOnly ? 'CHỈ TRIPWIRE (0 API call)' : 'ĐẦY ĐỦ (tripwire + LLM checklist)'}`);

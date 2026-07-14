@@ -8,6 +8,7 @@ import { BtcPriceService } from '../btc-price/btc-price.service';
 import { StorageService } from '../storage/storage.service';
 import { TruthSocialService } from '../truth-social/truth-social.service';
 import { DetectorService } from '../detector/detector.service';
+import { ModelRegistryService } from '../detector/model-registry.service';
 
 /**
  * TelegramService: giao diện người dùng của hệ thống.
@@ -44,6 +45,7 @@ export class TelegramService implements OnModuleInit {
     private readonly storageService: StorageService,
     private readonly truthSocialService: TruthSocialService,
     private readonly detectorService: DetectorService,
+    private readonly modelRegistry: ModelRegistryService,
   ) {}
 
   onModuleInit() {
@@ -104,15 +106,17 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // ── /detect — chạy detector thủ công trên nội dung hoặc postId/URL ─────
-    this.bot.onText(/^\/detect(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
+    // ── /detect (alias: /test) — chạy detector thủ công ────────────────────
+    // Nhận nội dung giả tưởng bất kỳ, postId, hoặc URL Truth Social.
+    this.bot.onText(/^\/(?:detect|test)(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
       let content = match?.[1]?.trim();
 
       if (!content) {
         await this.bot?.sendMessage(
           chatId,
-          'ℹ️ Dùng: <code>/detect &lt;nội dung | postId | URL&gt;</code> — kiểm tra bài có thuộc sự kiện lớp A không.',
+          'ℹ️ Dùng: <code>/test &lt;nội dung | postId | URL&gt;</code> (hoặc /detect — hai lệnh như nhau)\n' +
+            'Ví dụ: <code>/test Today I signed an executive order imposing 50% tariffs on all countries</code>',
           { parse_mode: 'HTML' },
         );
         return;
@@ -217,6 +221,41 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // ── /models — sổ đăng ký model free (tự cập nhật mỗi 6h) ───────────────
+    this.bot.onText(/^\/models(?:@[\w_]+)?(?:\s+(refresh))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        if (match?.[1]?.toLowerCase() === 'refresh') {
+          await this.bot?.sendMessage(chatId, '⏳ Đang fetch danh sách free + probe từng model (~30-60s)...');
+          await this.modelRegistry.refresh();
+        }
+        const s = this.modelRegistry.status();
+        const activeSet = new Set(s.active);
+        const lines = s.alive.length
+          ? s.alive.map(m => {
+              const mark = activeSet.has(m.id) ? '🎯' : '▫️';
+              return `${mark} <code>${this.escapeHtml(m.id)}</code> — ${(m.latencyMs / 1000).toFixed(1)}s`;
+            })
+          : s.active.map(id => `🎯 <code>${this.escapeHtml(id)}</code> <i>(seed)</i>`);
+        const updatedStr = s.updatedAt
+          ? s.updatedAt.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+          : 'chưa probe lần nào';
+        await this.bot?.sendMessage(
+          chatId,
+          `🤖 <b>MODEL FREE ĐANG SỐNG</b> (probe lần cuối: ${updatedStr})\n` +
+            `${s.usingSeed ? '⚠️ Đang dùng danh sách seed dự phòng — registry chưa có dữ liệu.\n' : ''}` +
+            `🎯 = đang dùng cho checklist (top 5 nhanh nhất, tối đa 3/nhà cung cấp)\n\n` +
+            lines.join('\n') +
+            `\n\nTự cập nhật mỗi 6 giờ. Cập nhật ngay: <code>/models refresh</code>`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /models: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
     // ── /clear — xoá bài cũ ────────────────────────────────────────────────
     this.bot.onText(/^\/clear\s+(\d{2})-(\d{2})-(\d{4})$/, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
@@ -251,8 +290,9 @@ export class TelegramService implements OnModuleInit {
         `Bot phát hiện <b>sự kiện lớp A</b> — các bài đăng của Trump gần như chắc chắn gây biến động mạnh giá BTC (lập crypto reserve, thuế toàn cầu, không kích...). ` +
         `Bài thường → tin im lặng; sự kiện lớp A → 🚨 alert có âm thanh đến mọi người.\n\n` +
         `🟢 /start — Đăng ký nhận alert\n` +
-        `🛰 /detect &lt;nội dung | postId | URL&gt; — Kiểm tra thủ công một bài\n` +
+        `🧪 /test &lt;nội dung giả tưởng | postId | URL&gt; — Thử detector với nội dung bất kỳ (alias: /detect)\n` +
         `📊 /check — 10 bài gần nhất đã kích hoạt alert, kèm giá BTC +1h/+1d/+7d\n` +
+        `🤖 /models — Danh sách model free đang sống (tự cập nhật 6h; /models refresh để probe ngay)\n` +
         `💰 /btc — Giá BTC hiện tại\n` +
         `💳 /credit — Trạng thái API key + hạn mức ngày\n` +
         `🗑️ /clear dd-mm-yyyy — Xóa bài viết trước ngày\n` +

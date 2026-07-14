@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { DetectionResult } from '../common/interfaces';
 import { gate } from './gate';
+import { ModelRegistryService } from './model-registry.service';
 import { extractJson, OpenRouterClient } from './openrouter.client';
 import { assessNovelty, jaccard, REPEAT_THRESHOLD, tokenize, topSimilar } from './novelty';
 import { EVENT_CLASSES, EventClass, runTripwires } from './taxonomy';
@@ -34,18 +35,6 @@ interface ChecklistVote {
   newAction: boolean;
   reasoning: string;
 }
-
-/**
- * Model free của OpenRouter dùng cho checklist, theo thứ tự ưu tiên.
- * Gọi song song tất cả — model chết bị loại êm, cần ≥2 phiếu hợp lệ đồng thuận.
- */
-const CHECKLIST_MODELS = [
-  'nvidia/nemotron-nano-12b-v2-vl:free',
-  'openai/gpt-oss-20b:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'nvidia/nemotron-3-nano-30b-a3b:free',
-  'openai/gpt-oss-120b:free',
-];
 
 /** Số phiếu tối thiểu đồng thuận (cùng lớp + confirmed + newAction) để alert. */
 const MIN_CONSENSUS = 2;
@@ -88,12 +77,15 @@ export class DetectorService {
    */
   private lastAlerts = new Map<EventClass, { tokens: Set<string>; at: number }>();
 
-  constructor(configService: ConfigService) {
+  constructor(
+    configService: ConfigService,
+    private readonly modelRegistry: ModelRegistryService,
+  ) {
     this.apiKey = configService.get<string>('OPENROUTER_API_KEY') || '';
     if (!this.apiKey) this.logger.warn('OPENROUTER_API_KEY chưa được cấu hình trong .env!');
     this.client = new OpenRouterClient(this.apiKey);
     this.logger.log(
-      `[CONFIG] Detector | checklist pool: ${CHECKLIST_MODELS.length} model | ` +
+      `[CONFIG] Detector | checklist: danh sách model free tự cập nhật (registry) | ` +
         `đồng thuận ≥${MIN_CONSENSUS} | daily limit ${this.DAILY_LIMIT} calls/day`,
     );
   }
@@ -272,12 +264,13 @@ export class DetectorService {
 
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Gọi checklist trên toàn bộ pool, song song, 1 call/model. */
+  /** Gọi checklist trên danh sách model sống từ registry, song song, 1 call/model. */
   private async runChecklist(content: string, recentPosts: string[]): Promise<ChecklistVote[]> {
     const prompt = this.buildChecklistPrompt(content, recentPosts);
+    const models = this.modelRegistry.getChecklistModels();
 
     const results = await Promise.all(
-      CHECKLIST_MODELS.map(async model => {
+      models.map(async model => {
         try {
           this.checkDailyLimit();
         } catch (err) {
