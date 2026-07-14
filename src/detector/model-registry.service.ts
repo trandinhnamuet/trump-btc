@@ -62,6 +62,24 @@ const PROBE_BUDGET_PER_DAY = 200;
 /** Dữ liệu cũ hơn ngưỡng này khi khởi động → refresh ngay. */
 const STALE_MS = 12 * 3_600_000;
 
+/**
+ * Số model sống tối thiểu để CHẤP NHẬN kết quả probe mới.
+ *
+ * Bắt buộc vì MIN_CONSENSUS (bên detector.service.ts) = 2: nếu registry ghi
+ * đè bằng danh sách chỉ 1 model, tầng checklist trở thành CẤU TRÚC KHÔNG THỂ
+ * đạt đồng thuận — tệ hơn hẳn không có registry (trước đây luôn thử 5 model
+ * cố định). Đo thực tế trên server 2026-07-14: gọi 19 probe đồng thời gây bùng
+ * nổ 429 (thundering herd trên free tier dùng chung), chỉ 1/19 sống sót dù
+ * cùng thời điểm máy khác probe tuần tự thấy 11/19 sống. Ngưỡng này + probe
+ * theo lô (xem BATCH_SIZE) là hai lớp phòng thủ cho đúng một sự cố.
+ */
+const MIN_VIABLE_MODELS = 3;
+
+/** Số probe chạy đồng thời mỗi lô — giảm bùng nổ 429 khi probe cả danh sách. */
+const PROBE_BATCH_SIZE = 4;
+/** Nghỉ giữa các lô probe. */
+const PROBE_BATCH_DELAY_MS = 1500;
+
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
   private readonly logger = new Logger(ModelRegistryService.name);
@@ -81,9 +99,17 @@ export class ModelRegistryService implements OnModuleInit {
 
   onModuleInit(): void {
     this.load();
+    // Refresh ngay khi: chưa từng probe, dữ liệu cũ >12h, HOẶC danh sách đã nạp
+    // không đủ ngưỡng đồng thuận (vd. file cũ bị ghi bởi một lần probe hỏng —
+    // "còn mới" theo thời gian nhưng vô dụng về số lượng). Không kiểm tra số
+    // lượng ở đây thì hệ thống có thể kẹt ở 1 model tới 6 giờ.
     const stale = !this.updatedAt || Date.now() - this.updatedAt.getTime() > STALE_MS;
-    if (stale) {
-      // Chạy nền — không chặn app khởi động; trước khi xong dùng SEED
+    const tooFew = this.models.length > 0 && this.models.length < MIN_VIABLE_MODELS;
+    if (stale || tooFew) {
+      if (tooFew) {
+        this.logger.warn(`[REGISTRY] Danh sách đã nạp chỉ có ${this.models.length} model (< ${MIN_VIABLE_MODELS}) — refresh ngay`);
+      }
+      // Chạy nền — không chặn app khởi động; trước khi xong dùng SEED (nếu tooFew, getChecklistModels() cũng lui về SEED)
       void this.refresh().catch(err =>
         this.logger.error(`Refresh model registry lúc khởi động lỗi: ${err instanceof Error ? err.message : String(err)}`),
       );
@@ -102,10 +128,10 @@ export class ModelRegistryService implements OnModuleInit {
 
   /**
    * Danh sách model cho checklist: top theo độ trễ, trần 3/nhà cung cấp.
-   * Sổ trống → SEED đã xác minh tay.
+   * Sổ trống HOẶC chưa đủ ngưỡng đồng thuận (§MIN_VIABLE_MODELS) → SEED.
    */
   getChecklistModels(): string[] {
-    if (!this.models.length) return SEED_MODELS;
+    if (this.models.length < MIN_VIABLE_MODELS) return SEED_MODELS;
 
     const picked: string[] = [];
     const perProvider = new Map<string, number>();
@@ -126,7 +152,7 @@ export class ModelRegistryService implements OnModuleInit {
       updatedAt: this.updatedAt,
       alive: [...this.models],
       active: this.getChecklistModels(),
-      usingSeed: this.models.length === 0,
+      usingSeed: this.models.length < MIN_VIABLE_MODELS,
     };
   }
 
@@ -143,17 +169,27 @@ export class ModelRegistryService implements OnModuleInit {
     this.refreshing = true;
     try {
       const candidates = await this.fetchFreeCandidates();
-      this.logger.log(`[REGISTRY] ${candidates.length} ứng viên free sau lọc — bắt đầu probe...`);
+      this.logger.log(`[REGISTRY] ${candidates.length} ứng viên free sau lọc — bắt đầu probe theo lô ${PROBE_BATCH_SIZE}...`);
 
-      const results = await Promise.all(candidates.map(id => this.probe(id)));
-      const alive = results
-        .filter((r): r is RegisteredModel => r !== null)
-        .sort((a, b) => a.latencyMs - b.latencyMs);
+      const alive: RegisteredModel[] = [];
+      for (let i = 0; i < candidates.length; i += PROBE_BATCH_SIZE) {
+        const batch = candidates.slice(i, i + PROBE_BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map(id => this.probe(id)));
+        for (const r of batchResults) if (r) alive.push(r);
+        if (i + PROBE_BATCH_SIZE < candidates.length) {
+          await new Promise(resolve => setTimeout(resolve, PROBE_BATCH_DELAY_MS));
+        }
+      }
+      alive.sort((a, b) => a.latencyMs - b.latencyMs);
 
-      if (!alive.length) {
-        // Toàn bộ free tier sập tại thời điểm probe — GIỮ danh sách cũ thay vì
-        // ghi đè bằng rỗng: danh sách cũ vẫn tốt hơn không có gì.
-        this.logger.warn('[REGISTRY] 0 model sống khi probe — giữ nguyên danh sách cũ');
+      if (alive.length < MIN_VIABLE_MODELS) {
+        // Quá ít model sống — có thể free tier thật sự yếu, hoặc probe đồng
+        // thời gây bùng nổ 429 (thấy trên server thật). Dù lý do gì, danh sách
+        // cũ (hoặc SEED) vẫn an toàn hơn một danh sách không đủ cho đồng thuận.
+        this.logger.warn(
+          `[REGISTRY] Chỉ ${alive.length}/${candidates.length} model sống (< ngưỡng ${MIN_VIABLE_MODELS}) ` +
+            `— giữ nguyên danh sách cũ để tránh phá đồng thuận`,
+        );
         return;
       }
 
