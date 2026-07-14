@@ -1,6 +1,6 @@
 # Cơ chế phát hiện sự kiện lớn tác động giá BTC — Tài liệu đầy đủ
 
-*Phiên bản: v3 (detector-only). Cập nhật: 2026-07-14.*
+*Phiên bản: v3.2 (detector-only). Cập nhật: 2026-07-14.*
 
 Hệ thống làm đúng **một việc**: theo dõi bài đăng của Trump trên Truth Social và phát hiện ~0.1% bài đăng gần như chắc chắn gây biến động mạnh giá BTC — lập crypto reserve, thuế toàn cầu, không kích quân sự... Khi phát hiện: gửi 🚨 alert Telegram đến mọi người dùng trong vòng vài giây đến ~30 giây. Mọi bài khác chỉ là tin feed im lặng.
 
@@ -61,8 +61,9 @@ PollingService.processPost(post)
         │     → dedup
         │
         └─ Bước 4: gửi Telegram
-              sự kiện lớp A  → 🚨🚨🚨 alert MỌI user, luôn có âm thanh
-              bài thường     → 📋 tin feed im lặng (không âm thanh)
+              sự kiện lớp A  → 🚨🚨🚨 alert MỌI user, luôn có âm thanh (không thể tắt)
+              bài thường     → 📋 tin feed im lặng, CHỈ gửi cho user có feedEnabled ≠ false
+                               (bật/tắt bằng lệnh /feed on|off, mặc định bật)
 
 ──── Cron nền ──────────────────────────────────────────────────────────
 Mỗi 1 phút: ghi giá BTC thật tại mốc +1h / +1d / +7d cho các bài đến hạn
@@ -231,6 +232,7 @@ Khi thêm/sửa tripwire pattern: chạy `--rules-only` (tức thì) để kiể
 | Lệnh | Chức năng |
 |---|---|
 | `/start` | Đăng ký nhận alert |
+| `/feed [on\|off]` | Bật/tắt tin feed im lặng (bài không phải sự kiện lớp A). Không tham số → xem trạng thái hiện tại. **Không ảnh hưởng đến 🚨 detector alert** — alert luôn gửi cho mọi user bất kể cờ này |
 | `/test <nội dung giả tưởng \| postId \| URL>` | Thử detector với nội dung bất kỳ — hiện tripwire khớp, phiếu từng model, độ mới. Alias: `/detect` (hai lệnh như nhau) |
 | `/check` | 10 bài gần nhất đã kích hoạt alert, kèm giá BTC +1h/+1d/+7d và % thay đổi |
 | `/models` | Danh sách model free đang sống (kèm độ trễ, đánh dấu 🎯 model đang dùng); `/models refresh` để fetch + probe ngay |
@@ -239,7 +241,7 @@ Khi thêm/sửa tripwire pattern: chạy `--rules-only` (tức thì) để kiể
 | `/clear dd-mm-yyyy` | Xóa bài viết trước ngày |
 | `/menu` | Danh sách lệnh |
 
-Lưu ý: `/test` (`/detect`) thủ công **không ghi dedup** — để lần chạy thử không chặn alert thật ngay sau đó.
+Lưu ý: `/test` (`/detect`) thủ công **không ghi dedup** — để lần chạy thử không chặn alert thật ngay sau đó. `/feed off` chỉ tắt tin feed của riêng người gọi lệnh (lưu trong `data/users.json`, trường `feedEnabled`); user khác không bị ảnh hưởng.
 
 ---
 
@@ -311,4 +313,5 @@ Kênh chấm điểm cũ (`src/analysis/`, `src/calibration/`, `src/severity/`, 
 | **v2** (`10187bd`) | Chấm điểm hiệu chuẩn: sự kiện đích \|z\|≥2, prompt thang neo, ensemble, isotonic, vòng lặp đóng | Hiệu chuẩn hoạt động (bias→+0.3%) nhưng không tạo ra tín hiệu |
 | **v2.1** (`63c363e`) | Thêm detector sự kiện lớp A chạy song song kênh chấm điểm | Recall 7/7, báo giả 0/12 trên golden set |
 | **v3** (`b18ee8e`) | **Xóa toàn bộ kênh chấm điểm** — detector là trái tim duy nhất; bài thường thành tin feed im lặng | Golden set giữ nguyên 7/7, 0/12 sau phẫu thuật |
-| **v3.1** (hiện tại) | `ModelRegistryService`: danh sách checklist tự fetch + probe thật mỗi 6h thay vì hardcode; lệnh `/models` + `/models refresh`; `/test` alias cho `/detect` để thử nội dung giả tưởng | Đo thực tế: pool cũ chết 4/5; danh sách mới sau probe 11/19 model free sống, recall giữ 7/7 |
+| **v3.1** (`a9af0c3`) | `ModelRegistryService`: danh sách checklist tự fetch + probe thật mỗi 6h thay vì hardcode; lệnh `/models` + `/models refresh`; `/test` alias cho `/detect` để thử nội dung giả tưởng; retry-on-429 + MIN_VIABLE_MODELS chống ghi đè danh sách hỏng | Đo thực tế: pool cũ chết 4/5; probe đồng thời gây thundering-herd (1/19), vá bằng lô+retry; recall giữ 7/7 |
+| **v3.2** (hiện tại) | Lệnh `/feed on\|off` — tắt tin feed im lặng theo từng user, không đụng detector alert | — |

@@ -256,6 +256,39 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
+    // ── /feed — bật/tắt tin feed im lặng (không đụng đến 🚨 detector alert) ─
+    this.bot.onText(/^\/feed(?:@[\w_]+)?(?:\s+(on|off))?$/i, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      const arg = match?.[1]?.toLowerCase();
+
+      if (!arg) {
+        const user = this.users.find(u => u.chatId === chatId);
+        const current = user?.feedEnabled !== false; // mặc định true
+        await this.bot?.sendMessage(
+          chatId,
+          `📋 Tin feed (bài không phải sự kiện lớp A): <b>${current ? 'ĐANG BẬT' : 'ĐANG TẮT'}</b>\n\n` +
+            `Dùng <code>/feed off</code> để tắt, <code>/feed on</code> để bật lại.\n` +
+            `⚠️ Không ảnh hưởng đến 🚨 alert sự kiện lớn — alert luôn được gửi.`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      try {
+        const enabled = arg === 'on';
+        this.setFeedEnabled(chatId, enabled);
+        await this.bot?.sendMessage(
+          chatId,
+          enabled
+            ? '✅ Đã BẬT tin feed. Bạn sẽ nhận tin im lặng cho mọi bài đăng của Trump.'
+            : '🔕 Đã TẮT tin feed. Bạn sẽ chỉ nhận 🚨 alert khi có sự kiện lớn ảnh hưởng BTC.',
+        );
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        await this.bot?.sendMessage(chatId, `❌ ${errMsg}`);
+      }
+    });
+
     // ── /clear — xoá bài cũ ────────────────────────────────────────────────
     this.bot.onText(/^\/clear\s+(\d{2})-(\d{2})-(\d{4})$/, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
@@ -290,6 +323,7 @@ export class TelegramService implements OnModuleInit {
         `Bot phát hiện <b>sự kiện lớp A</b> — các bài đăng của Trump gần như chắc chắn gây biến động mạnh giá BTC (lập crypto reserve, thuế toàn cầu, không kích...). ` +
         `Bài thường → tin im lặng; sự kiện lớp A → 🚨 alert có âm thanh đến mọi người.\n\n` +
         `🟢 /start — Đăng ký nhận alert\n` +
+        `🔕 /feed [on|off] — Bật/tắt tin im lặng cho bài thường (không ảnh hưởng 🚨 alert)\n` +
         `🧪 /test &lt;nội dung giả tưởng | postId | URL&gt; — Thử detector với nội dung bất kỳ (alias: /detect)\n` +
         `📊 /check — 10 bài gần nhất đã kích hoạt alert, kèm giá BTC +1h/+1d/+7d\n` +
         `🤖 /models — Danh sách model free đang sống (tự cập nhật 6h; /models refresh để probe ngay)\n` +
@@ -453,7 +487,9 @@ export class TelegramService implements OnModuleInit {
 💰 BTC: ${btcPriceText} · 🕐 ${postedAt}
 🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
 
-    for (const user of this.users) {
+    // feedEnabled mặc định true khi vắng mặt (user đăng ký trước khi có /feed)
+    const recipients = this.users.filter(u => u.feedEnabled !== false);
+    for (const user of recipients) {
       try {
         await this.bot.sendMessage(user.chatId, message, {
           parse_mode: 'HTML',
@@ -586,6 +622,19 @@ export class TelegramService implements OnModuleInit {
     fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
     this.logger.log(`✅ Đã thêm user mới: ${name} (${chatId})`);
     return true;
+  }
+
+  /**
+   * Bật/tắt nhận tin feed im lặng cho một user. Không đụng đến detector alert.
+   * @throws nếu user chưa đăng ký (/start trước)
+   */
+  private setFeedEnabled(chatId: string, enabled: boolean): void {
+    const user = this.users.find(u => u.chatId === chatId);
+    if (!user) throw new Error('Bạn chưa đăng ký. Gửi /start trước.');
+    user.feedEnabled = enabled;
+    const config: UserConfig = { users: this.users };
+    fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
+    this.logger.log(`✅ setFeedEnabled: ${chatId} → ${enabled}`);
   }
 
   /** Escape HTML entities để tránh lỗi khi hiển thị trong HTML parse mode */

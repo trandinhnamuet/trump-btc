@@ -51,6 +51,12 @@ export interface DetectionResult {
 export interface TelegramUser {
   chatId: string;
   name: string;
+  /**
+   * Có nhận tin feed im lặng (bài không phải sự kiện lớp A) hay không.
+   * Mặc định true khi vắng mặt (user cũ trước khi có tính năng này).
+   * KHÔNG ảnh hưởng đến 🚨 detector alert — alert luôn gửi cho mọi user.
+   */
+  feedEnabled?: boolean;
 }
 
 /** Cấu hình danh sách user (lưu trong data/users.json) */
