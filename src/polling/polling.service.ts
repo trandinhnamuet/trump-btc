@@ -1,8 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ConfigService } from '@nestjs/config';
 import { TruthSocialService } from '../truth-social/truth-social.service';
-import { AnalysisService, DailyLimitExceededException } from '../analysis/analysis.service';
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { TelegramService } from '../telegram/telegram.service';
 import { StorageService } from '../storage/storage.service';
@@ -13,20 +11,19 @@ import { PostRecord, TruthSocialPost } from '../common/interfaces';
  * PollingService: Orchestrator chính của ứng dụng.
  *
  * Chịu trách nhiệm:
- * 1. Mỗi 90-120 giây: Kiểm tra bài viết mới của Trump trên Truth Social
- * 2. Mỗi 1 phút: Kiểm tra và cập nhật giá BTC tại các mốc (1h, 1 ngày, 7 ngày)
+ * 1. Mỗi 90-120 giây: kiểm tra bài viết mới của Trump trên Truth Social
+ * 2. Với mỗi bài mới: chạy DETECTOR (sự kiện lớp A) → alert khẩn nếu trúng,
+ *    tin feed im lặng nếu không
+ * 3. Mỗi 1 phút: ghi giá BTC thật tại các mốc +1h/+1d/+7d sau mỗi bài
+ *    (để đối chiếu điều gì đã xảy ra sau các bài detector alert)
  */
 @Injectable()
 export class PollingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PollingService.name);
 
-  // Ngưỡng xác suất để gửi alert (lấy từ .env, mặc định 90%)
-  private readonly threshold: number;
-
   // Flag để tránh chạy song song nếu lần poll trước chưa xong
   private isPolling = false;
   private isCheckingPrices = false;
-  private isRefitting = false;
 
   // Dynamic polling fields
   private pollTimer: NodeJS.Timeout | null = null;
@@ -37,24 +34,15 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly truthSocialService: TruthSocialService,
-    private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
     private readonly telegramService: TelegramService,
     private readonly storageService: StorageService,
-    private readonly configService: ConfigService,
     private readonly detectorService: DetectorService,
-  ) {
-    this.threshold = parseInt(
-      this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '90',
-    );
-    this.logger.log(`Ngưỡng gửi alert: ${this.threshold}% xác suất ảnh hưởng BTC`);
-  }
+  ) {}
 
   onModuleInit() {
     // Warm-up delay 10s then start dynamic polling at 90-120s intervals
     this.schedulePoll(10_000);
-    // Backfill: re-process any stored posts that never got OpenAI analysis
-    setTimeout(() => this.reprocessUnanalyzed(), 5_000);
   }
 
   onModuleDestroy() {
@@ -80,120 +68,6 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       }
     }, delay);
     this.logger.debug(`Poll tiếp theo sau ${Math.round(delay / 1000)}s`);
-  }
-
-  /**
-   * Chạy 1 lần khi khởi động: re-process các bài trong storage chưa có phân tích OpenAI.
-   * Xảy ra khi app bị crash giữa chừng trước khi OpenAI trả về kết quả.
-   */
-  private async reprocessUnanalyzed() {
-    const unanalyzed = this.storageService.getUnanalyzedPosts();
-    if (unanalyzed.length === 0) return;
-
-    this.logger.log(`🔄 Backfill: tìm thấy ${unanalyzed.length} bài chưa được phân tích, đang xử lý lại...`);
-    const EXPIRY_MS = 60 * 60 * 1000; // 1 giờ
-    const now = Date.now();
-
-    for (const record of unanalyzed) {
-      // Bỏ qua nếu bài đã quá 1 giờ trong hàng chờ (tính theo fetchedAt)
-      const fetchedAt = record.fetchedAt ? new Date(record.fetchedAt).getTime() : 0;
-      const ageMs = now - fetchedAt;
-      if (fetchedAt > 0 && ageMs > EXPIRY_MS) {
-        const ageMinutes = Math.round(ageMs / 60_000);
-        this.storageService.addSkippedExpiredPost({
-          postId: record.id,
-          content: record.content.substring(0, 150),
-          fetchedAt: record.fetchedAt,
-          skippedAt: new Date().toISOString(),
-          ageMinutes,
-          url: record.url,
-        });
-        // Đánh dấu đã xử lý để không retry vô hạn
-        this.storageService.updatePost(record.id, {
-          btcInfluenceProbability: 0,
-          ensembleProbability: 0,
-          btcDirection: 'neutral',
-          summary: `Bỏ qua: bài đã ${ageMinutes} phút trong hàng chờ (>60 phút).`,
-          reasoning: `Skipped by expiry check — fetchedAt=${record.fetchedAt}`,
-        });
-        continue;
-      }
-
-      const post = { id: record.id, content: record.content, createdAt: record.createdAt, url: record.url, mediaUrls: record.mediaUrls };
-      try {
-        const btcPrice = record.btcPriceAtPost ?? null;
-        // Backfill: bỏ qua mediaUrls vì URL ảnh Truth Social hết hạn nhanh → gây invalid_image_url
-        // Nếu bài chỉ có ảnh (không có text), gate sẽ chặn mà không tốn API call
-        const analysis = await this.analysisService.analyzePost(post.content, [], post.id, post.createdAt);
-        this.storageService.updatePost(post.id, {
-          summary: analysis.summary,
-          btcInfluenceProbability: analysis.btcInfluenceProbability,
-          ensembleProbability: analysis.ensembleProbability,
-          severityScore: analysis.severityScore,
-          marketSignalScore: analysis.marketSignalScore,
-          hardRule: analysis.hardRule,
-          matchedRules: analysis.matchedRules,
-          btcDirection: analysis.btcDirection,
-          reasoning: analysis.reasoning,
-          modelUsed: analysis.modelUsed,
-          scoring: analysis.scoring,
-        });
-        this.logger.log(
-          `🔄 Backfill bài ${post.id}: model=${analysis.btcInfluenceProbability}% ensemble=${analysis.ensembleProbability}% (${analysis.btcDirection})${
-            analysis.hardRule ? ' ⚠️ HARD RULE' : ''
-          }`,
-        );
-        const silent = analysis.ensembleProbability < 10;
-        this.logger.log(
-          silent
-            ? `📋 Backfill bài ${post.id}: ensemble ${analysis.ensembleProbability}% < 10% → Gửi silent`
-            : `🚨 Backfill bài ${post.id}: ensemble ${analysis.ensembleProbability}% >= 10% → Gửi alert!`,
-        );
-        await this.telegramService.sendAlert(
-          { id: post.id, content: post.content, createdAt: post.createdAt, url: post.url },
-          analysis,
-          btcPrice,
-          silent,
-        );
-        this.storageService.updatePost(post.id, { alerted: true });
-      } catch (err) {
-        if (err instanceof DailyLimitExceededException) {
-          this.logger.error(
-            `[BACKFILL] Dừng backfill: ${err.message} | Đã xử lý một phần, còn lại sẽ được backfill sau khi restart.`,
-          );
-          if (err.shouldAlert) {
-            await this.telegramService.sendDailyLimitWarning();
-          }
-          break; // Dừng backfill loop ngay
-        }
-        const errMsg = err instanceof Error ? err.message : String(err);
-        // 429 = OpenRouter rate limit → dừng backfill, thử lại sau
-        const is429 = errMsg.includes('status code 429') || (err as any)?.response?.status === 429;
-        if (is429) {
-          this.logger.warn(`[BACKFILL] OpenRouter 429 rate limit — dừng backfill, sẽ thử lại sau khi restart.`);
-          break;
-        }
-        this.logger.error(`Backfill lỗi bài ${post.id}: ${errMsg}`);
-        // Lỗi 400 (invalid_image_url, nội dung bị từ chối...) là lỗi vĩnh viễn
-        // Đánh dấu đã phân tích để tránh retry vô hạn mỗi lần restart
-        const isPermError =
-          errMsg.includes('status code 400') ||
-          (err as any)?.response?.status === 400;
-        if (isPermError) {
-          this.storageService.updatePost(post.id, {
-            btcInfluenceProbability: 0,
-            ensembleProbability: 0,
-            btcDirection: 'neutral',
-            summary: 'Phân tích thất bại: URL ảnh không hợp lệ hoặc đã hết hạn.',
-            reasoning: errMsg,
-          });
-          this.logger.warn(
-            `[BACKFILL] Bài ${post.id}: lỗi 400 vĩnh viễn → đánh dấu đã phân tích (0%) để bỏ qua lần sau.`,
-          );
-        }
-      }
-    }
-    this.logger.log('🔄 Backfill hoàn tất.');
   }
 
   /** Poll Truth Social for new posts. Called by schedulePoll. */
@@ -252,8 +126,6 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         const backoffMs = Math.min(cap, base * Math.pow(2, this.consecutive403 - 1));
         this.pauseUntil = Date.now() + backoffMs;
         this.logger.warn(`Truth Social 403 (lần #${this.consecutive403}); backoff ${Math.round(backoffMs / 60000)} phút`);
-      } else if (error instanceof DailyLimitExceededException) {
-        this.logger.warn(`[RATE LIMIT] Dừng poll cycle: đã đạt giới hạn API ngày hôm nay.`);
       } else {
         this.logger.error('Lỗi trong quá trình polling:', msg);
       }
@@ -263,108 +135,26 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * CRON JOB 2: Chạy mỗi 1 phút.
-   * Kiểm tra các bài viết cần cập nhật giá BTC (1h, 1 ngày, 7 ngày sau khi đăng).
-   * Đây là cơ chế để đánh giá độ chính xác của dự đoán.
-   */
-  @Cron(CronExpression.EVERY_MINUTE)
-  async updateBtcPrices() {
-    if (this.isCheckingPrices) return;
-
-    this.isCheckingPrices = true;
-    try {
-      // Lấy danh sách bài cần kiểm tra giá
-      const pendingPosts = this.storageService.getPostsPendingPriceCheck();
-
-      if (pendingPosts.length === 0) {
-        return;
-      }
-
-      this.logger.log(`Cập nhật giá BTC cho ${pendingPosts.length} bài viết...`);
-
-      // Lấy giá BTC hiện tại một lần (dùng cho tất cả bài đến hạn)
-      const currentPrice = await this.btcPriceService.getCurrentPrice();
-      if (currentPrice === null) {
-        this.logger.warn('Không lấy được giá BTC, bỏ qua cập nhật lần này');
-        return;
-      }
-
-      const now = new Date();
-
-      for (const post of pendingPosts) {
-        const updates: Partial<PostRecord> = {};
-        let updated = false;
-
-        // Kiểm tra mốc 1 giờ
-        if (
-          post.checkAt1h &&
-          post.btcPriceAt1h == null &&
-          new Date(post.checkAt1h) <= now
-        ) {
-          updates.btcPriceAt1h = currentPrice;
-          updated = true;
-          this.logger.log(`📊 Cập nhật giá BTC 1h cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
-        }
-
-        // Kiểm tra mốc 1 ngày
-        if (
-          post.checkAt1d &&
-          post.btcPriceAt1d == null &&
-          new Date(post.checkAt1d) <= now
-        ) {
-          updates.btcPriceAt1d = currentPrice;
-          updated = true;
-          this.logger.log(`📊 Cập nhật giá BTC 1d cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
-        }
-
-        // Kiểm tra mốc 7 ngày
-        if (
-          post.checkAt7d &&
-          post.btcPriceAt7d == null &&
-          new Date(post.checkAt7d) <= now
-        ) {
-          updates.btcPriceAt7d = currentPrice;
-          updated = true;
-          this.logger.log(`📊 Cập nhật giá BTC 7d cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
-
-          // Khi đã có đủ 7d, log tóm tắt độ chính xác
-          this.logAccuracySummary(post, updates.btcPriceAt7d, currentPrice);
-        }
-
-        if (updated) {
-          this.storageService.updatePost(post.id, updates);
-        }
-      }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error('Lỗi khi cập nhật giá BTC: ' + errMsg);
-    } finally {
-      this.isCheckingPrices = false;
-    }
-  }
-
-  /**
-   * Xử lý một bài viết mới: phân tích → lưu → gửi alert nếu cần.
+   * Xử lý một bài viết mới: lưu → detector → alert hoặc feed im lặng.
    */
   private async processPost(post: TruthSocialPost): Promise<void> {
     this.logger.log(`Đang xử lý bài viết: ${post.id} (${post.createdAt})`);
     this.logger.log(`Nội dung: ${post.content.substring(0, 100)}...`);
 
-    // Bước 0: Bỏ qua nếu bài đã được phân tích thành công trước đó
+    // Bước 0: bỏ qua nếu bài đã được xử lý trước đó
     const existing = this.storageService.getPostById(post.id);
-    if (existing?.btcInfluenceProbability != null) {
-      this.logger.log(`Bài ${post.id} đã được phân tích trước đó (${existing.btcInfluenceProbability}%), bỏ qua.`);
+    if (existing?.alerted) {
+      this.logger.log(`Bài ${post.id} đã được xử lý trước đó, bỏ qua.`);
       this.storageService.setLastPostId(post.id);
       return;
     }
 
     const postTime = new Date(post.createdAt);
 
-    // Bước 1: Lấy giá BTC hiện tại (trước khi phân tích để có timestamp chính xác)
+    // Bước 1: lấy giá BTC hiện tại
     const btcPrice = await this.btcPriceService.getCurrentPrice();
 
-    // Bước 2: Lưu bài viết vào storage ngay (với basic data trước)
-    // Các mốc check giá dựa trên thời gian Trump đăng bài
+    // Bước 2: lưu bài vào storage ngay, kèm các mốc kiểm giá sau này
     const record: PostRecord = {
       id: post.id,
       content: post.content,
@@ -377,23 +167,18 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
       btcPriceAt1d: null,
       btcPriceAt7d: null,
       mediaUrls: post.mediaUrls,
-      // Các mốc kiểm tra giá BTC sau khi bài được đăng
-      checkAt1h: new Date(postTime.getTime() + 60 * 60 * 1000).toISOString(), // +1 giờ
-      checkAt1d: new Date(postTime.getTime() + 24 * 60 * 60 * 1000).toISOString(), // +1 ngày
-      checkAt7d: new Date(postTime.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(), // +7 ngày
+      checkAt1h: new Date(postTime.getTime() + 60 * 60 * 1000).toISOString(),
+      checkAt1d: new Date(postTime.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      checkAt7d: new Date(postTime.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     };
-
     this.storageService.savePost(record);
 
-    // ⭐ Cập nhật lastPostId NGAY SAU KHI lưu bài - trước khi gọi OpenAI
-    // Tránh tình huống app crash giữa chừng khiến poll sau tìm lại bài cũ
+    // ⭐ Cập nhật lastPostId NGAY SAU KHI lưu bài — chống app crash giữa chừng
     this.storageService.setLastPostId(post.id);
     this.logger.debug(`lastPostId cập nhật → ${post.id}`);
 
-    // Bước 2.5: Máy phát hiện sự kiện lớp A — chạy TRƯỚC scoring vì tốc độ là
-    // sống còn với sự kiện thật (tripwire nổ trong mili-giây, checklist ~30s,
-    // trong khi ensemble scoring có thể mất vài phút với free tier chập chờn).
-    // Detector lỗi thì chỉ log, KHÔNG được chặn luồng chấm điểm phía sau.
+    // Bước 3: DETECTOR — phát hiện sự kiện lớp A
+    // (tripwire nổ trong mili-giây; checklist LLM ~30s khi tripwire im lặng)
     try {
       const sevenDaysAgo = Date.now() - 7 * 24 * 3_600_000;
       const recentContents = this.storageService
@@ -401,132 +186,84 @@ export class PollingService implements OnModuleInit, OnModuleDestroy {
         .filter(p => p.id !== post.id && new Date(p.createdAt).getTime() >= sevenDaysAgo)
         .map(p => p.content);
 
-      const detection = await this.detectorService.detect(
-        post.content,
-        recentContents,
-        () => this.analysisService.countExternalCall(),
-      );
+      const detection = await this.detectorService.detect(post.content, recentContents);
       this.storageService.updatePost(post.id, { detection });
 
       if (detection.alert) {
         this.logger.warn(
-          `🚨🚨 [DETECTOR] Bài ${post.id} → SỰ KIỆN LỚP ${detection.eventClass} (${detection.eventClassName}) — gửi alert khẩn TRƯỚC khi chấm điểm`,
+          `🚨🚨 [DETECTOR] Bài ${post.id} → SỰ KIỆN LỚP ${detection.eventClass} (${detection.eventClassName}) — gửi alert khẩn`,
         );
         await this.telegramService.sendDetectorAlert(post, detection, btcPrice);
+      } else {
+        // Không phải sự kiện lớp A → tin feed im lặng (không âm thanh) để user
+        // vẫn theo dõi được dòng bài đăng mà không bị làm phiền
+        await this.telegramService.sendFeedMessage(post, btcPrice);
       }
+      this.storageService.updatePost(post.id, { alerted: true });
     } catch (err) {
-      this.logger.error(`Detector lỗi bài ${post.id} (bỏ qua, tiếp tục chấm điểm): ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`Detector lỗi bài ${post.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // Bước 3: Phân tích bằng ensemble + hiệu chuẩn
-    try {
-      const analysis = await this.analysisService.analyzePost(
-        post.content,
-        post.mediaUrls,
-        post.id,
-        post.createdAt,
-      );
-
-      // Cập nhật record với kết quả phân tích
-      // ⭐ LƯU Ý: Phân tích được LƯU VÀO STORAGE cho TẤT CẢ BÀI, không chỉ những bài > ngưỡng
-      this.storageService.updatePost(post.id, {
-        summary: analysis.summary,
-        btcInfluenceProbability: analysis.btcInfluenceProbability,
-        ensembleProbability: analysis.ensembleProbability,
-        severityScore: analysis.severityScore,
-        marketSignalScore: analysis.marketSignalScore,
-        hardRule: analysis.hardRule,
-        matchedRules: analysis.matchedRules,
-        btcDirection: analysis.btcDirection,
-        reasoning: analysis.reasoning,
-        modelUsed: analysis.modelUsed,
-        scoring: analysis.scoring,
-      });
-      const s = analysis.scoring;
-      this.logger.log(
-        `📊 Đã lưu phân tích bài ${post.id}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})` +
-          (s
-            ? ` | base rate=${(s.baseRate * 100).toFixed(1)}% | ${s.calibrated ? 'isotonic' : 'prior+bằng chứng'}` +
-              ` | đồng thuận=${(s.agreement * 100).toFixed(0)}%`
-            : ' | gate loại'),
-      );
-
-      // Bước 4: Luôn gửi Telegram. Dùng ensembleProbability cho quyết định silent vs. alert
-      const silent = analysis.ensembleProbability < 10;
-      this.logger.log(
-        silent
-          ? `📋 Ensemble ${analysis.ensembleProbability}% < 10% → Gửi silent`
-          : `🚨 ENSEMBLE ${analysis.ensembleProbability}% >= 10% → Gửi Telegram alert!`,
-      );
-      await this.telegramService.sendAlert(post, analysis, btcPrice, silent);
-      this.storageService.updatePost(post.id, { alerted: true });
-    } catch (error) {
-      // Nếu OpenAI lỗi, vẫn tiếp tục (đã lưu basic data, sẽ thiếu analysis)
-      const errMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Lỗi phân tích OpenAI cho bài ${post.id}: ${errMsg}`);
-      if (error instanceof DailyLimitExceededException) {
-        if (error.shouldAlert) {
-          await this.telegramService.sendDailyLimitWarning();
-        }
-        // Re-throw để dừng xử lý các bài còn lại trong cùng poll cycle
-        throw error;
-      }
+    // Nếu lần xử lý này vừa chạm trần API ngày → cảnh báo Telegram đúng một lần
+    if (this.detectorService.consumeLimitAlert()) {
+      await this.telegramService.sendDailyLimitWarning();
     }
 
     this.logger.log(`✅ Đã xử lý xong bài ${post.id}`);
   }
 
   /**
-   * CRON JOB 3: mỗi giờ — vòng lặp đóng của hệ thống hiệu chuẩn.
-   *
-   * Lấy giá thật từ Binance cho các dự đoán đã quá mốc 1 giờ, gắn nhãn
-   * (|z| >= 2 hay không), rồi fit lại đường hiệu chuẩn của từng model và cập nhật
-   * base rate. Không có bước này, mọi con số % chỉ là phỏng đoán không kiểm chứng.
+   * CRON: mỗi 1 phút — ghi giá BTC thật tại các mốc +1h/+1d/+7d sau mỗi bài.
+   * Đây là dữ liệu đối chiếu "điều gì đã xảy ra" cho các bài detector alert
+   * (hiển thị trong /check).
    */
-  @Cron(CronExpression.EVERY_HOUR)
-  async refitCalibration() {
-    if (this.isRefitting) return;
-    this.isRefitting = true;
+  @Cron(CronExpression.EVERY_MINUTE)
+  async updateBtcPrices() {
+    if (this.isCheckingPrices) return;
+
+    this.isCheckingPrices = true;
     try {
-      const report = await this.analysisService.refitCalibration();
-      if (report.newlyLabeled > 0) {
-        const fitted = report.perModel.filter(p => p.fitted);
-        this.logger.log(
-          `🎯 [HIỆU CHUẨN] +${report.newlyLabeled} nhãn mới | ${report.totalLabeled} bài có nhãn | ` +
-            `base rate=${(report.baseRate * 100).toFixed(1)}% | P(up|moved)=${(report.upRateGivenMove * 100).toFixed(1)}%` +
-            (fitted.length
-              ? ` | đã fit: ${fitted.map(p => `${p.model.split('/').pop()} (n=${p.n}, Brier=${p.brier.toFixed(3)})`).join(', ')}`
-              : ' | chưa model nào đủ mẫu để fit'),
-        );
+      const pendingPosts = this.storageService.getPostsPendingPriceCheck();
+      if (pendingPosts.length === 0) return;
+
+      this.logger.log(`Cập nhật giá BTC cho ${pendingPosts.length} bài viết...`);
+
+      const currentPrice = await this.btcPriceService.getCurrentPrice();
+      if (currentPrice === null) {
+        this.logger.warn('Không lấy được giá BTC, bỏ qua cập nhật lần này');
+        return;
       }
-    } catch (err) {
-      this.logger.error(`Lỗi refit hiệu chuẩn: ${err instanceof Error ? err.message : String(err)}`);
+
+      const now = new Date();
+      for (const post of pendingPosts) {
+        const updates: Partial<PostRecord> = {};
+        let updated = false;
+
+        if (post.checkAt1h && post.btcPriceAt1h == null && new Date(post.checkAt1h) <= now) {
+          updates.btcPriceAt1h = currentPrice;
+          updated = true;
+          this.logger.log(`📊 Giá BTC +1h cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
+        }
+        if (post.checkAt1d && post.btcPriceAt1d == null && new Date(post.checkAt1d) <= now) {
+          updates.btcPriceAt1d = currentPrice;
+          updated = true;
+          this.logger.log(`📊 Giá BTC +1d cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
+        }
+        if (post.checkAt7d && post.btcPriceAt7d == null && new Date(post.checkAt7d) <= now) {
+          updates.btcPriceAt7d = currentPrice;
+          updated = true;
+          this.logger.log(`📊 Giá BTC +7d cho bài ${post.id}: $${currentPrice.toLocaleString()}`);
+        }
+
+        if (updated) {
+          this.storageService.updatePost(post.id, updates);
+        }
+      }
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error('Lỗi khi cập nhật giá BTC: ' + errMsg);
     } finally {
-      this.isRefitting = false;
+      this.isCheckingPrices = false;
     }
-  }
-
-  /**
-   * Log tham khảo khi đã có đủ dữ liệu 7 ngày.
-   *
-   * Lưu ý: đây KHÔNG phải thước đo chính thức. Sự kiện đích của hệ thống là biến
-   * động bất thường trong 1 giờ (|z| >= 2), được chấm bởi refitCalibration().
-   * Ngưỡng ±1% sau 7 ngày dưới đây không tính đến độ biến động của chế độ thị
-   * trường, nên gần như luôn "trúng" khi vol cao và luôn "trượt" khi vol thấp.
-   */
-  private logAccuracySummary(post: PostRecord, btcPrice7d: number, currentPrice: number): void {
-    if (!post.btcPriceAtPost || !post.btcInfluenceProbability) return;
-
-    const change7d = ((currentPrice - post.btcPriceAtPost) / post.btcPriceAtPost) * 100;
-    const predictedDirection = post.btcDirection;
-    const actualDirection = change7d > 1 ? 'increase' : change7d < -1 ? 'decrease' : 'neutral';
-    const isCorrect = predictedDirection === actualDirection;
-
-    this.logger.log(
-      `📊 [7 NGÀY, tham khảo] Bài ${post.id}: ` +
-      `Dự đoán=${predictedDirection} (${post.btcInfluenceProbability}%), ` +
-      `Thực tế=${actualDirection} (${change7d.toFixed(2)}% sau 7 ngày), ` +
-      `Kết quả=${isCorrect ? '✅ ĐÚNG' : '❌ SAI'}`,
-    );
   }
 }

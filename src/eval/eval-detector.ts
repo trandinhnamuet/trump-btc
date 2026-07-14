@@ -31,7 +31,6 @@ const rulesOnly = process.argv.includes('--rules-only');
 
 async function main() {
   const detector = new DetectorService(new ConfigService());
-  const noop = () => {};
 
   console.log('═'.repeat(78));
   console.log(` ĐÁNH GIÁ DETECTOR — ${rulesOnly ? 'CHỈ TRIPWIRE (0 API call)' : 'ĐẦY ĐỦ (tripwire + LLM checklist)'}`);
@@ -48,7 +47,7 @@ async function main() {
   }> = [];
 
   for (const c of GOLDEN_CASES) {
-    const r = await detector.detect(c.content, c.recentContext ?? [], noop, {
+    const r = await detector.detect(c.content, c.recentContext ?? [], {
       skipDedup: true,
       rulesOnly,
     });

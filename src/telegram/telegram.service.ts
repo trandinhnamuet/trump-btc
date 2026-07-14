@@ -3,20 +3,22 @@ import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import TelegramBot = require('node-telegram-bot-api');
-import { AnalysisResult, DetectionResult, PostRecord, TruthSocialPost, UserConfig } from '../common/interfaces';
-import { AnalysisService } from '../analysis/analysis.service';
-import { ENSEMBLE_POOL } from '../analysis/ensemble.service';
-import { DetectorService } from '../detector/detector.service';
+import { DetectionResult, PostRecord, TruthSocialPost, UserConfig } from '../common/interfaces';
 import { BtcPriceService } from '../btc-price/btc-price.service';
 import { StorageService } from '../storage/storage.service';
 import { TruthSocialService } from '../truth-social/truth-social.service';
+import { DetectorService } from '../detector/detector.service';
 
 /**
- * TelegramService: Gửi thông báo alert đến danh sách users khi Trump đăng bài
- * có xác suất ảnh hưởng BTC cao.
+ * TelegramService: giao diện người dùng của hệ thống.
  *
- * Danh sách users được đọc từ data/users.json.
- * Bot chạy ở chế độ "send-only" (polling: false) vì chỉ cần gửi tin nhắn.
+ * Hai loại tin gửi đi:
+ * 1. 🚨 Detector alert — sự kiện lớp A, gửi mọi user, luôn có âm thanh.
+ * 2. 📋 Feed im lặng — mọi bài không phải sự kiện lớp A, không âm thanh,
+ *    để user vẫn theo dõi được dòng bài đăng.
+ *
+ * Bot chạy polling mode để nhận lệnh; có watchdog tự khởi động lại polling
+ * khi lỗi mạng hoặc rơi vào zombie state.
  */
 @Injectable()
 export class TelegramService implements OnModuleInit {
@@ -29,83 +31,55 @@ export class TelegramService implements OnModuleInit {
   private pollingRestartTimer: ReturnType<typeof setTimeout> | null = null;
   // Watchdog: kiểm tra định kỳ polling còn sống không
   private pollingWatchdogTimer: ReturnType<typeof setInterval> | null = null;
-  // Thời điểm cuối polling_error xảy ra
-  private lastPollingErrorAt = 0;
   // Thời điểm polling được (re)start lần cuối — để phát hiện zombie state
   private pollingStartedAt = 0;
 
-  // Đường dẫn file danh sách users
   private readonly usersFile = path.join(process.cwd(), 'data', 'users.json');
   // File log lưu các alert đã gửi (JSON per line)
   private readonly alertsFile = path.join(process.cwd(), 'data', 'alerts.log');
 
-  // Ngưỡng mặc định toàn cục từ .env (dùng khi user chưa set /thr)
-  private readonly globalThreshold: number;
-
-  /**
-   * Ngưỡng "đáng chú ý" cho /check, /check-all, /check2.
-   *
-   * v1 dùng 30% vì model chấm trung bình ~16% (đã lệch cao gấp 2 lần thực tế —
-   * xem BAO-CAO-CO-CHE-V2.md). Ở v2, xác suất đã hiệu chuẩn quanh base rate thật
-   * (~5-8%), trần cứng 85% (P_MOVE_CAP trong calibration.service.ts) — giữ 30%
-   * sẽ khiến ba lệnh này gần như luôn rỗng. 15% ≈ 2-3 lần base rate, đủ để lọc
-   * nhiễu nhưng vẫn bắt được các bài có bằng chứng rõ (severity/anchor cao).
-   */
-  private readonly CHECK_THRESHOLD_PCT = 15;
-
   constructor(
     private readonly configService: ConfigService,
-    private readonly analysisService: AnalysisService,
     private readonly btcPriceService: BtcPriceService,
     private readonly storageService: StorageService,
     private readonly truthSocialService: TruthSocialService,
     private readonly detectorService: DetectorService,
-  ) {
-    this.globalThreshold = parseInt(
-      this.configService.get<string>('BTC_INFLUENCE_THRESHOLD') || '0',
-      10,
-    );
-  }
+  ) {}
 
-  /** Khởi tạo bot và load danh sách users khi app start */
   onModuleInit() {
     this.initBot();
     this.loadUsers();
   }
 
-  /** Khởi tạo Telegram Bot */
+  // ─────────────────────────────────────────────────────────────────────────
+  // Khởi tạo bot + đăng ký lệnh
+  // ─────────────────────────────────────────────────────────────────────────
+
   private initBot() {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token) {
-      this.logger.warn(
-        'TELEGRAM_BOT_TOKEN chưa được cấu hình. Telegram alerts sẽ bị bỏ qua.',
-      );
+      this.logger.warn('TELEGRAM_BOT_TOKEN chưa được cấu hình. Telegram alerts sẽ bị bỏ qua.');
       return;
     }
 
-    // polling: true = nhận lệnh từ users, có thể handle /start để lấy Chat ID
     this.bot = new TelegramBot(token, { polling: true });
-    // Check Grok credits once and log result for debugging
-    this.analysisService.getRemainingCredits()
-      .then(info => this.logger.log(`GROK credit check: ${info}`))
-      .catch(err => this.logger.warn(`GROK credit check failed: ${err instanceof Error ? err.message : String(err)}`));
-    
-    // Handle /start command để tự động add user vào danh sách
+
+    // Log trạng thái API key một lần khi khởi động
+    this.detectorService.getRemainingCredits()
+      .then(info => this.logger.log(`OpenRouter check: ${info}`))
+      .catch(err => this.logger.warn(`OpenRouter check failed: ${err instanceof Error ? err.message : String(err)}`));
+
+    // ── /start — đăng ký nhận alert ────────────────────────────────────────
     this.bot.onText(/\/start/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       const userName = msg.chat.first_name || `User${chatId}`;
-
       try {
         const added = this.addUserToList(chatId, userName);
-        if (added) {
-          const message = `✅ Xin chào <b>${userName}</b>!\n\n👤 <b>Chat ID:</b> <code>${chatId}</code>\n\n🎉 Bạn đã được thêm vào danh sách nhận alerts từ Trump!`;
-          this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
-          this.logger.log(`✅ User /start: Đã add ${userName} (${chatId}) vào danh sách`);
-        } else {
-          const message = `✅ Xin chào <b>${userName}</b>!\n\n👤 <b>Chat ID:</b> <code>${chatId}</code>\n\n📌 Bạn đã có trong danh sách nhận alerts rồi!`;
-          this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
-          this.logger.log(`ℹ️ User /start: ${userName} (${chatId}) đã tồn tại`);
-        }
+        const message = added
+          ? `✅ Xin chào <b>${userName}</b>!\n\n👤 <b>Chat ID:</b> <code>${chatId}</code>\n\n🎉 Bạn đã được thêm vào danh sách nhận alert sự kiện lớn từ Trump!`
+          : `✅ Xin chào <b>${userName}</b>!\n\n👤 <b>Chat ID:</b> <code>${chatId}</code>\n\n📌 Bạn đã có trong danh sách rồi!`;
+        this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
+        this.logger.log(`${added ? '✅ Đã add' : 'ℹ️ Đã tồn tại'}: ${userName} (${chatId})`);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(`❌ Lỗi xử lý /start: ${errMsg}`);
@@ -113,375 +87,14 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /test command để phân tích nội dung do user cung cấp
-    // Accept both space and newline after /test and capture all following text
-    this.bot.onText(/^\/test(?:\s+)([\s\S]+)/i, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const content = (match && match[1]) ? match[1].trim() : '';
-
-      // If user sent only '/test' without content, reply with usage help
-      if (!content) {
-        await this.bot?.sendMessage(
-          chatId,
-          'ℹ️ Vui lòng gửi nội dung sau lệnh /test, ví dụ:\n/test Tin tức về USD và tỷ giá hối đoái...',
-        );
-        return;
-      }
-
-      // Kiểm tra nếu content là post ID thuần (chỉ số) hoặc Truth Social URL chứa post ID
-      const postIdMatch = content.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
-      if (postIdMatch) {
-        const postId = postIdMatch[1];
-        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài viết <code>${postId}</code> từ Truth Social...`, { parse_mode: 'HTML' });
-        try {
-          const post = await this.truthSocialService.getPostById(postId);
-          if (!post || (!post.content && (!post.mediaUrls || !post.mediaUrls.length))) {
-            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài viết <code>${postId}</code> trên Truth Social.`, { parse_mode: 'HTML' });
-            return;
-          }
-          const previewText = post.content
-            ? post.content.substring(0, 200)
-            : `[Ảnh đính kèm: ${post.mediaUrls?.length} ảnh]`;
-          await this.bot?.sendMessage(chatId, `⏳ Đang phân tích...\n\n<i>${previewText}</i>`, { parse_mode: 'HTML' });
-          const analysis = await this.analysisService.analyzePost(post.content, post.mediaUrls);
-          const btcPrice = await this.btcPriceService.getCurrentPrice();
-          const message = this.buildMessage(post, analysis, btcPrice);
-          await this.bot?.sendMessage(chatId, message, {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-          });
-          this.logger.log(`✅ /test postId ${postId}: ${analysis.btcInfluenceProbability}% (${analysis.btcDirection})`);
-        } catch (error) {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          this.logger.error(`❌ Lỗi /test postId: ${errMsg}`);
-          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài viết: ${errMsg}`);
-        }
-        return;
-      }
-
-      // Kiểm tra nếu content chỉ là URL
-      const isUrlOnly = /^(RT:\s+)?https?:\/\/\S+(\s+https?:\/\/\S+)*\s*$/.test(content.trim());
-      if (isUrlOnly) {
-        await this.bot?.sendMessage(
-          chatId,
-          '⚠️ Nội dung bạn gửi chỉ là một URL — AI không thể phân tích link, sẽ bịa nội dung.\n\nVui lòng gửi <b>nội dung văn bản</b> của bài viết.',
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      try {
-        await this.bot?.sendMessage(chatId, '⏳ Đang phân tích...');
-
-        // Analyze the provided content
-        const analysis = await this.analysisService.analyzePost(content);
-
-        // Get current BTC price
-        const btcPrice = await this.btcPriceService.getCurrentPrice();
-
-        // Format and send the analysis result
-        const message = this.buildTestMessage(content, analysis, btcPrice);
-        await this.bot?.sendMessage(chatId, message, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-        });
-
-        this.logger.log(
-          `✅ Phân tích /test từ user ${msg.chat.first_name}: xác suất = ${analysis.btcInfluenceProbability}%`,
-        );
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi xử lý /test: ${errMsg}`);
-        await this.bot?.sendMessage(
-          chatId,
-          `❌ Lỗi phân tích: ${errMsg}`,
-        );
-      }
-    });
-
-    // Handle /testall command — test content against all available models in parallel
-    this.bot.onText(/^\/testall(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const input = match?.[1]?.trim();
-
-      if (!input) {
-        await this.bot?.sendMessage(
-          chatId,
-          'ℹ️ Dùng: <code>/testall &lt;nội dung&gt;</code> hoặc <code>/testall &lt;postId&gt;</code>',
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      // Nếu là post ID / URL → fetch nội dung từ Truth Social trước
-      const postIdMatch = input.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
-      let content = input;
-      if (postIdMatch) {
-        const postId = postIdMatch[1];
-        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài <code>${postId}</code>...`, { parse_mode: 'HTML' });
-        try {
-          const post = await this.truthSocialService.getPostById(postId);
-          if (!post?.content) {
-            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài <code>${postId}</code>.`, { parse_mode: 'HTML' });
-            return;
-          }
-          content = post.content;
-        } catch (err) {
-          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-      }
-
-      const modelCount = this.analysisService.getAvailableModels().length;
-      const preview = content.length > 120 ? content.substring(0, 117) + '...' : content;
-      const waitMsg = await this.bot?.sendMessage(
-        chatId,
-        `⏳ Đang chạy <b>${modelCount} models</b> song song...\n\n<i>${this.escapeHtml(preview)}</i>`,
-        { parse_mode: 'HTML' },
-      );
-
-      try {
-        const results = await this.analysisService.analyzeWithAllModels(content);
-
-        const sorted = [...results].sort((a, b) => {
-          if (a.error && !b.error) return 1;
-          if (!a.error && b.error) return -1;
-          return b.probability - a.probability;
-        });
-
-        const lines = sorted.map(r => {
-          const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
-          const dur = `<i>(${(r.durationMs / 1000).toFixed(1)}s)</i>`;
-          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i> ${dur}`;
-          const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
-          const icon = r.probability >= 70 ? '🔴' : r.probability >= 40 ? '🟡' : '🟢';
-          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b> ${dur}`;
-        });
-
-        const ok = results.filter(r => !r.error).length;
-        const err = results.length - ok;
-        const errNote = err > 0 ? ` · <i>${err} lỗi</i>` : '';
-        const reply =
-          `🧪 <b>TEST ALL MODELS</b> (${ok}/${results.length} OK${errNote})\n` +
-          `<i>${this.escapeHtml(preview)}</i>\n\n` +
-          lines.join('\n');
-
-        // Chỉnh sửa tin nhắn chờ thành kết quả
-        if (waitMsg?.message_id) {
-          await this.bot?.editMessageText(reply, {
-            chat_id: chatId,
-            message_id: waitMsg.message_id,
-            parse_mode: 'HTML',
-          });
-        } else {
-          await this.bot?.sendMessage(chatId, reply, { parse_mode: 'HTML' });
-        }
-
-        this.logger.log(`✅ /testall: ${ok}/${results.length} models OK`);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`❌ Lỗi /testall: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /testallfull — same as /testall but also sends per-model explanations
-    this.bot.onText(/^\/testallfull(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const input = match?.[1]?.trim();
-
-      if (!input) {
-        await this.bot?.sendMessage(
-          chatId,
-          'ℹ️ Dùng: <code>/testallfull &lt;nội dung&gt;</code> hoặc <code>/testallfull &lt;postId&gt;</code>',
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      const postIdMatch = input.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
-      let content = input;
-      if (postIdMatch) {
-        const postId = postIdMatch[1];
-        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài <code>${postId}</code>...`, { parse_mode: 'HTML' });
-        try {
-          const post = await this.truthSocialService.getPostById(postId);
-          if (!post?.content) {
-            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài <code>${postId}</code>.`, { parse_mode: 'HTML' });
-            return;
-          }
-          content = post.content;
-        } catch (err) {
-          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-      }
-
-      const modelCount = this.analysisService.getAvailableModels().length;
-      const preview = content.length > 120 ? content.substring(0, 117) + '...' : content;
-      const waitMsg = await this.bot?.sendMessage(
-        chatId,
-        `⏳ Đang chạy <b>${modelCount} models</b> song song...\n\n<i>${this.escapeHtml(preview)}</i>`,
-        { parse_mode: 'HTML' },
-      );
-
-      try {
-        const results = await this.analysisService.analyzeWithAllModels(content);
-
-        const sorted = [...results].sort((a, b) => {
-          if (a.error && !b.error) return 1;
-          if (!a.error && b.error) return -1;
-          return b.probability - a.probability;
-        });
-
-        const summaryLines = sorted.map(r => {
-          const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
-          const dur = `<i>(${(r.durationMs / 1000).toFixed(1)}s)</i>`;
-          if (r.error) return `❌ ${shortName} — <i>${this.escapeHtml(r.error)}</i> ${dur}`;
-          const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
-          const icon = r.probability >= 70 ? '🔴' : r.probability >= 40 ? '🟡' : '🟢';
-          return `${icon} <code>${shortName}</code>: <b>${r.probability}% ${dir}</b> ${dur}`;
-        });
-
-        const ok = results.filter(r => !r.error).length;
-        const err = results.length - ok;
-        const errNote = err > 0 ? ` · <i>${err} lỗi</i>` : '';
-        const summaryMsg =
-          `🔬 <b>TEST ALL — FULL</b> (${ok}/${results.length} OK${errNote})\n` +
-          `<i>${this.escapeHtml(preview)}</i>\n\n` +
-          summaryLines.join('\n');
-
-        if (waitMsg?.message_id) {
-          await this.bot?.editMessageText(summaryMsg, {
-            chat_id: chatId,
-            message_id: waitMsg.message_id,
-            parse_mode: 'HTML',
-          });
-        } else {
-          await this.bot?.sendMessage(chatId, summaryMsg, { parse_mode: 'HTML' });
-        }
-
-        // Send explanations for successful models as a separate message
-        const withExplanation = sorted.filter(r => !r.error && r.explanation);
-        if (withExplanation.length > 0) {
-          const explanLines = withExplanation.map((r, i) => {
-            const shortName = this.escapeHtml(r.model.replace(/:free$/, '').replace(/^[^/]+\//, ''));
-            const dir = r.direction === 'increase' ? '↑' : r.direction === 'decrease' ? '↓' : '─';
-            const exp = this.escapeHtml(r.explanation!.substring(0, 150));
-            return `${i + 1}. <b>${shortName}</b> (${r.probability}% ${dir}):\n<i>${exp}</i>`;
-          });
-
-          // Split into chunks to stay within Telegram 4096-char limit
-          const header = `💬 <b>GIẢI THÍCH CHI TIẾT</b> (${withExplanation.length} models)\n\n`;
-          const chunks: string[] = [];
-          let current = header;
-          for (const line of explanLines) {
-            const candidate = current + (current === header ? '' : '\n\n') + line;
-            if (candidate.length > 3900) {
-              chunks.push(current);
-              current = line;
-            } else {
-              current = candidate;
-            }
-          }
-          if (current) chunks.push(current);
-
-          for (const chunk of chunks) {
-            await this.bot?.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
-          }
-        }
-
-        this.logger.log(`✅ /testallfull: ${ok}/${results.length} models OK`);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`❌ Lỗi /testallfull: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /thr command — set per-user alert threshold
-    this.bot.onText(/^\/thr(?:\s+(\d+))?$/, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const numStr = match?.[1];
-
-      // No argument → show current threshold
-      if (!numStr) {
-        const user = this.users.find(u => u.chatId === chatId);
-        if (!user) {
-          await this.bot?.sendMessage(chatId, '❌ Bạn chưa đăng ký. Gửi /start trước.');
-          return;
-        }
-        const current = user.threshold ?? this.globalThreshold;
-        await this.bot?.sendMessage(
-          chatId,
-          `📊 <b>Ngưỡng thông báo của bạn:</b> <b>${current}%</b>\n\nDùng <code>/thr 60</code> để đặt ngưỡng mới (0–100).`,
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      const num = parseInt(numStr, 10);
-      if (isNaN(num) || num < 0 || num > 100) {
-        await this.bot?.sendMessage(chatId, '❌ Ngưỡng phải là số từ 0 đến 100.\nVí dụ: <code>/thr 60</code>', { parse_mode: 'HTML' });
-        return;
-      }
-
-      try {
-        this.setUserThreshold(chatId, num);
-        await this.bot?.sendMessage(
-          chatId,
-          `✅ Đã đặt ngưỡng thông báo: <b>${num}%</b>\nBạn sẽ chỉ nhận thông báo khi Ensemble Score ≥ ${num}%.`,
-          { parse_mode: 'HTML' },
-        );
-        this.logger.log(`✅ /thr: ${msg.chat.first_name} (${chatId}) đặt ngưỡng = ${num}%`);
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ /thr lỗi: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /menu command
-    this.bot.onText(/^\/menu(?:@[\w_]+)?$/i, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      const user = this.users.find(u => u.chatId === chatId);
-      const currentThr = user?.threshold ?? this.globalThreshold;
-      const message = `📋 <b>DANH SÁCH LỆNH</b>\n\n` +
-        `🟢 /start — Đăng ký nhận alert tự động từ Trump\n` +
-        `💰 /btc — Xem giá BTC hiện tại\n` +
-        `📊 /check — 7 bài viết mới nhất có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% (kèm link)\n` +
-        `📊 /check-all — Tất cả bài viết có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% (kèm link)\n` +
-        `📅 /check2 — Bảng các tin có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% trong 10 ngày gần nhất\n` +
-        `🔄 /latest — Phân tích lại và gửi lại alert bài mới nhất\n` +
-        `🧪 /test &lt;nội dung&gt; — Phân tích thủ công một đoạn văn bản\n` +
-        `🛰 /detect &lt;nội dung&gt; — Kiểm tra sự kiện lớp A (tripwire + phân loại 5 model)\n` +
-        `🔬 /testall &lt;nội dung&gt; — So sánh kết quả từ tất cả models (kèm thời gian)\n` +
-        `🔬 /testallfull &lt;nội dung&gt; — Giống /testall nhưng thêm giải thích của từng model\n` +
-        `📋 /prompt — Xem mẫu prompt AI hiện tại\n` +
-        `� /prompt &lt;nội dung&gt; — Xem prompt AI cho bài viết cụ thể\n` +
-        `�🗑️ /clear dd-mm-yyyy — Xóa các bài viết trước ngày (ví dụ: /clear 31-03-2026)\n` +
-        `💳 /credit — Xem trạng thái API key OpenRouter\n` +
-        `🎯 /calib — Trạng thái hiệu chuẩn: base rate + đường hiệu chuẩn từng model\n` +
-        `🔁 /refit — Chấm điểm các dự đoán đã quá 1h rồi fit lại đường hiệu chuẩn\n` +
-        `🗑 /skipped — Danh sách bài bị bỏ qua do quá 1h trong hàng chờ phân tích\n` +
-        `🤖 /model — Xem model AI đang dùng (mặc định: ensemble)\n` +
-        `📋 /models — Danh sách model theo thứ tự ưu tiên\n` +
-        `📋 /model-list — Danh sách model có thể dùng\n` +
-        `🔀 /model &lt;tên&gt; — Chạy model đơn lẻ; /model ensemble để quay lại\n` +
-        `🎚 /thr &lt;số&gt; — Đặt ngưỡng nhận thông báo (hiện tại: <b>${currentThr}%</b>)\n` +
-        `📋 /menu — Hiển thị danh sách lệnh này`;
-      await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
-    });
-
-    // Handle /btc command
+    // ── /btc — giá BTC hiện tại ────────────────────────────────────────────
     this.bot.onText(/^\/btc$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
         await this.bot?.sendMessage(chatId, '⏳ Đang lấy giá BTC...');
         const price = await this.btcPriceService.getCurrentPrice();
         const text = price !== null
-          ? `💰 <b>Giá BTC hiện tại:</b> <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</b>
-🕐 ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`
+          ? `💰 <b>Giá BTC hiện tại:</b> <b>$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</b>\n🕐 ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`
           : '❌ Không lấy được giá BTC lúc này, vui lòng thử lại sau.';
         await this.bot?.sendMessage(chatId, text, { parse_mode: 'HTML' });
       } catch (error) {
@@ -491,384 +104,36 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /check-all command - show all posts with rate >= CHECK_THRESHOLD_PCT
-    this.bot.onText(/^\/check-all$/, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const posts = this.storageService.getAllPosts();
-        const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}%.`);
-          return;
-        }
-
-        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
-        await this.bot?.sendMessage(chatId, message, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-        });
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /check-all: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /check command - show 7 most recent posts with rate >= CHECK_THRESHOLD_PCT
-    this.bot.onText(/^\/check$/, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const posts = this.storageService.getAllPosts();
-        const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT)
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-          .slice(0, 7);
-
-        if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}%.`);
-          return;
-        }
-
-        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
-        await this.bot?.sendMessage(chatId, message, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-        });
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /check: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /clear command - delete posts before a date (format: dd-mm-yyyy)
-    this.bot.onText(/^\/clear\s+(\d{2})-(\d{2})-(\d{4})$/, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const day = parseInt(match[1], 10);
-        const month = parseInt(match[2], 10);
-        const year = parseInt(match[3], 10);
-
-        // Validate date
-        if (month < 1 || month > 12 || day < 1 || day > 31) {
-          await this.bot?.sendMessage(chatId, '❌ Ngày không hợp lệ. Định dạng: /clear dd-mm-yyyy');
-          return;
-        }
-
-        // Create date at 00:00:00 UTC
-        const beforeDate = new Date(year, month - 1, day);
-        const deletedCount = this.storageService.deletePostsBefore(beforeDate);
-
-        await this.bot?.sendMessage(
-          chatId,
-          `✅ Đã xóa <b>${deletedCount}</b> bài viết trước ngày ${day.toString().padStart(2, '0')}-${month.toString().padStart(2, '0')}-${year}`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /clear: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /check2 command (last 10 days only, rate >= CHECK_THRESHOLD_PCT)
-    this.bot.onText(/^\/check2$/, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const now = new Date();
-        const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
-
-        const posts = this.storageService.getAllPosts();
-        const filtered = posts
-          .filter(p => (p.btcInfluenceProbability ?? 0) >= this.CHECK_THRESHOLD_PCT && new Date(p.createdAt).getTime() >= tenDaysAgo.getTime())
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        if (filtered.length === 0) {
-          await this.bot?.sendMessage(chatId, `📭 Chưa có bài viết nào có xác suất ảnh hưởng BTC &gt;=${this.CHECK_THRESHOLD_PCT}% trong 10 ngày gần nhất.`);
-          return;
-        }
-
-        const message = this.buildCheckMessage(filtered, this.CHECK_THRESHOLD_PCT);
-        await this.bot?.sendMessage(chatId, message, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-        });
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /check2: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /latest command - re-analyze and resend alert for latest post
-    this.bot.onText(/^\/latest$/, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const posts = this.storageService.getAllPosts();
-        if (posts.length === 0) {
-          await this.bot?.sendMessage(chatId, '📭 Chưa có bài viết nào trong storage.');
-          return;
-        }
-
-        const latestPost = [...posts].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        )[0];
-
-        const postedAt = new Date(latestPost.createdAt).toLocaleString('vi-VN', {
-          timeZone: 'Asia/Ho_Chi_Minh',
-        });
-        await this.bot?.sendMessage(
-          chatId,
-          `⏳ Đang phân tích lại bài mới nhất...\n\n<i>${latestPost.content.substring(0, 150)}</i>\n\n🕐 Đăng lúc: ${postedAt}`,
-          { parse_mode: 'HTML' },
-        );
-
-        const analysis = await this.analysisService.analyzePost(
-          latestPost.content,
-          latestPost.mediaUrls,
-          latestPost.id,
-          latestPost.createdAt,
-        );
-        const btcPrice = await this.btcPriceService.getCurrentPrice();
-
-        // Cập nhật lại phân tích trong storage
-        this.storageService.updatePost(latestPost.id, {
-          summary: analysis.summary,
-          btcInfluenceProbability: analysis.btcInfluenceProbability,
-          ensembleProbability: analysis.ensembleProbability,
-          severityScore: analysis.severityScore,
-          marketSignalScore: analysis.marketSignalScore,
-          hardRule: analysis.hardRule,
-          matchedRules: analysis.matchedRules,
-          btcDirection: analysis.btcDirection,
-          reasoning: analysis.reasoning,
-          modelUsed: analysis.modelUsed,
-          scoring: analysis.scoring,
-        });
-
-        const post: TruthSocialPost = {
-          id: latestPost.id,
-          content: latestPost.content,
-          createdAt: latestPost.createdAt,
-          url: latestPost.url,
-        };
-
-        // Gửi alert đến tất cả users (bỏ qua ngưỡng - đây là re-send thủ công)
-        this.loadUsers();
-        const message = this.buildMessage(post, analysis, btcPrice);
-        let sentCount = 0;
-        for (const user of this.users) {
-          try {
-            await this.bot?.sendMessage(user.chatId, message, {
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-            });
-            sentCount++;
-          } catch (e) {
-            const errMsg = e instanceof Error ? e.message : String(e);
-            this.logger.error(`❌ /latest: Không gửi được đến ${user.name}: ${errMsg}`);
-          }
-        }
-
-        this.logger.log(
-          `✅ /latest: Phân tích lại ${latestPost.id} → ${analysis.btcInfluenceProbability}% (${analysis.btcDirection}), gửi cho ${sentCount} users`,
-        );
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /latest: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /prompt command - show AI prompt template (with optional content)
-    // Usage: /prompt            (show template with example content)
-    //        /prompt <content>  (show prompt with specific post content)
-    this.bot.onText(/^\/prompt(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const content = match?.[1]?.trim();
-
-      try {
-        if (content) {
-          await this.bot?.sendMessage(chatId, '⏳ Đang tạo prompt cho nội dung bài viết...');
-          const promptWithContent = await this.analysisService.buildPromptForContent(content);
-          this.sendPromptInParts(chatId, promptWithContent, `📋 <b>PROMPT CHO BÀI VIẾT:</b>\n\n${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
-          this.logger.log(`✅ /prompt <content>: Gửi prompt cho content (${content.length} chars)`);
-        } else {
-          await this.bot?.sendMessage(chatId, '⏳ Đang lấy mẫu prompt...');
-          const promptTemplate = await this.analysisService.getPromptTemplate();
-          this.sendPromptInParts(chatId, promptTemplate, '📋 <b>MẪU PROMPT AI HIỆN TẠI:</b>\n\n');
-          this.logger.log(`✅ /prompt: Gửi template cho user ${msg.chat.first_name}`);
-        }
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /prompt: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi lấy prompt: ${errMsg}`);
-      }
-    });
-
-    // Handle /model command — show, list, or switch model
-    this.bot.onText(/^\/model(?:@[\w_]+)?(?:\s+([\S]+))?$/i, async (msg: any, match: any) => {
-      const chatId = String(msg.chat.id);
-      const arg = match?.[1]?.trim();
-
-      if (!arg) {
-        // /model — show current model
-        const current = this.analysisService.getCurrentModel();
-        const models = this.analysisService.getAvailableModels();
-        const modelInfo = models.find(m => m.name === current);
-        const priceStr = modelInfo
-          ? `💰 Input: $${modelInfo.inputPrice}/1M tokens | Output: $${modelInfo.outputPrice}/1M tokens`
-          : '';
-        await this.bot?.sendMessage(
-          chatId,
-          `🤖 <b>Model hiện tại:</b> <code>${current}</code>\n${priceStr}`,
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      if (arg.toLowerCase() === 'list') {
-        // /model list — show available models
-        const list = this.analysisService.getAvailableModels();
-        const current = this.analysisService.getCurrentModel();
-        const lines = list.map(m => {
-          const check = m.name === current ? '✅ (đang dùng)' : '';
-          return `• <code>${m.name}</code> ${check}\n  💰 Input: $${m.inputPrice}/1M | Output: $${m.outputPrice}/1M`;
-        });
-        await this.bot?.sendMessage(
-          chatId,
-          `📋 <b>Danh sách model:</b>\n\n${lines.join('\n\n')}\n\nDùng <code>/model &lt;tên&gt;</code> để đổi.`,
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      // /model <name> — switch model
-      try {
-        const newModel = this.analysisService.setModel(arg);
-        const models = this.analysisService.getAvailableModels();
-        const modelInfo = models.find(m => m.name === newModel);
-        const priceStr = modelInfo
-          ? `\n💰 Input: $${modelInfo.inputPrice}/1M | Output: $${modelInfo.outputPrice}/1M`
-          : '';
-        await this.bot?.sendMessage(
-          chatId,
-          `✅ Đã đổi model thành <code>${newModel}</code>${priceStr}`,
-          { parse_mode: 'HTML' },
-        );
-        this.logger.log(`✅ /model: ${msg.chat.first_name || chatId} đổi sang ${newModel}`);
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        await this.bot?.sendMessage(chatId, `❌ ${errMsg}`, { parse_mode: 'HTML' });
-      }
-    });
-
-    // Handle /model-list command — prints a tidy monospace table
-    this.bot.onText(/^\/model-list(?:@[\w_]+)?(?:\s+(\S+))?$/i, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        this.logger.log(`/model-list requested by ${msg.chat.first_name || chatId}`);
-
-        const text = String(msg.text || '').trim();
-        const parts = text.split(/\s+/);
-        const arg = parts[1] ? parts[1].toLowerCase() : '';
-
-        const list = this.analysisService.getAvailableModels();
-        const current = this.analysisService.getCurrentModel();
-
-        // Build columns with fixed widths for a clean monospace table
-        const nameWidth = Math.min(40, Math.max(...list.map(m => m.name.length), 10));
-        const nowWidth = 6;
-        const visionWidth = 7;
-        const priceWidth = 16;
-
-        const padRight = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - s.length));
-        const padLeft = (s: string, w: number) => ' '.repeat(Math.max(0, w - s.length)) + s;
-
-        const header = padRight('Model', nameWidth) + '  ' + padRight('Now', nowWidth) + '  ' + padRight('Vision', visionWidth) + '  ' + padLeft('Input', priceWidth) + '  ' + padLeft('Output', priceWidth);
-        const divider = '-'.repeat(header.length);
-
-        const rows = list.map((m: any) => {
-          const mark = m.name === current ? '✓' : '';
-          const vis = m.vision ? '📷' : '';
-          const inStr = m.inputPrice != null ? `$${m.inputPrice}/1M` : '-';
-          const outStr = m.outputPrice != null ? `$${m.outputPrice}/1M` : '-';
-          return padRight(m.name, nameWidth) + '  ' + padRight(mark, nowWidth) + '  ' + padRight(vis, visionWidth) + '  ' + padLeft(inStr, priceWidth) + '  ' + padLeft(outStr, priceWidth);
-        });
-
-        const table = [header, divider, ...rows].join('\n');
-
-        // If user asked for CSV (future option), send CSV preview
-        if (arg === 'csv') {
-          const csvLines = [ ['Model','Now','Input','Output'].join(','), ...list.map(m => [
-            `"${m.name}"`, m.name === current ? 'yes' : 'no', m.inputPrice ?? '', m.outputPrice ?? ''
-          ].join(',')) ];
-          const csv = csvLines.join('\n');
-          if (csv.length > 3800) {
-            await this.sendPromptInParts(chatId, csv, '📥 <b>CSV export (preview):</b>\n\n');
-          } else {
-            await this.bot?.sendMessage(chatId, `<pre>${this.escapeHtml(csv)}</pre>`, { parse_mode: 'HTML' });
-          }
-          return;
-        }
-
-        // Send table in <pre> blocks; chunk if message too long for Telegram
-        const maxLen = 4000;
-        const linesArr = table.split('\n');
-        const partsToSend: string[] = [];
-        let cur = '';
-        for (const line of linesArr) {
-          if ((cur + line + '\n').length > maxLen) {
-            if (cur) partsToSend.push(cur);
-            cur = line + '\n';
-          } else {
-            cur += line + '\n';
-          }
-        }
-        if (cur) partsToSend.push(cur);
-
-        for (let i = 0; i < partsToSend.length; i++) {
-          const headerText = i === 0 ? '📋 <b>DANH SÁCH MODEL:</b>\n\n' : '';
-          const footer = i === partsToSend.length - 1 ? '\n\nDùng /model <tên> để đổi.' : '';
-          await this.bot?.sendMessage(chatId, `${headerText}<pre>${this.escapeHtml(partsToSend[i])}</pre>${footer}`, { parse_mode: 'HTML' });
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`❌ Lỗi /model-list: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi khi lấy danh sách model: ${this.escapeHtml(errMsg)}`, { parse_mode: 'HTML' });
-      }
-    });
-
-    // Handle /credit command - show OpenAI usage stats
-    this.bot.onText(/^\/credit(?:@[\w_]+)?(?:\s.*)?$/i, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra OpenAI credit...');
-        const info = await this.analysisService.getRemainingCredits();
-        await this.bot?.sendMessage(chatId, `💳 <b>OpenAI credit:</b>\n${this.escapeHtml(String(info))}`, { parse_mode: 'HTML' });
-        this.logger.log(`✅ /credit: responded to ${msg.chat.first_name || chatId}`);
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /credit: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi lấy credit: ${errMsg}`);
-      }
-    });
-
-    // Handle /detect command — chạy máy phát hiện sự kiện lớp A trên nội dung bất kỳ
+    // ── /detect — chạy detector thủ công trên nội dung hoặc postId/URL ─────
     this.bot.onText(/^\/detect(?:@[\w_]+)?(?:\s+([\s\S]+))?$/i, async (msg: any, match: any) => {
       const chatId = String(msg.chat.id);
-      const content = match?.[1]?.trim();
+      let content = match?.[1]?.trim();
 
       if (!content) {
         await this.bot?.sendMessage(
           chatId,
-          'ℹ️ Dùng: <code>/detect &lt;nội dung&gt;</code> — kiểm tra bài có thuộc sự kiện lớp A (tripwire + phân loại 5 model) không.',
+          'ℹ️ Dùng: <code>/detect &lt;nội dung | postId | URL&gt;</code> — kiểm tra bài có thuộc sự kiện lớp A không.',
           { parse_mode: 'HTML' },
         );
         return;
+      }
+
+      // Nếu là post ID thuần hoặc URL Truth Social → fetch nội dung trước
+      const postIdMatch = content.match(/(?:truthsocial\.com\/[^\s]+\/|^)(\d{15,25})(?:\s*$)/);
+      if (postIdMatch) {
+        const postId = postIdMatch[1];
+        await this.bot?.sendMessage(chatId, `⏳ Đang lấy bài <code>${postId}</code> từ Truth Social...`, { parse_mode: 'HTML' });
+        try {
+          const post = await this.truthSocialService.getPostById(postId);
+          if (!post?.content) {
+            await this.bot?.sendMessage(chatId, `❌ Không tìm thấy bài <code>${postId}</code>.`, { parse_mode: 'HTML' });
+            return;
+          }
+          content = post.content;
+        } catch (err) {
+          await this.bot?.sendMessage(chatId, `❌ Lỗi lấy bài: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
       }
 
       try {
@@ -879,12 +144,8 @@ export class TelegramService implements OnModuleInit {
           .filter(p => new Date(p.createdAt).getTime() >= sevenDaysAgo)
           .map(p => p.content);
 
-        const d = await this.detectorService.detect(
-          content,
-          recentContents,
-          () => this.analysisService.countExternalCall(),
-          { skipDedup: true }, // lệnh thủ công: không ghi dedup, không chặn alert thật sau đó
-        );
+        // Lệnh thủ công: không ghi dedup để không chặn alert thật sau đó
+        const d = await this.detectorService.detect(content, recentContents, { skipDedup: true });
 
         const votesStr = d.votes.length
           ? d.votes
@@ -905,6 +166,10 @@ export class TelegramService implements OnModuleInit {
 
         await this.bot?.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
         this.logger.log(`✅ /detect: alert=${d.alert} class=${d.eventClass ?? '-'}`);
+
+        if (this.detectorService.consumeLimitAlert()) {
+          await this.sendDailyLimitWarning();
+        }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         this.logger.error(`❌ Lỗi /detect: ${errMsg}`);
@@ -912,114 +177,90 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    // Handle /calib command — show calibration state (base rate, đường hiệu chuẩn từng model)
-    this.bot.onText(/^\/calib(?:@[\w_]+)?$/i, async (msg: any) => {
+    // ── /check — các bài detector đã alert gần đây, kèm giá +1h/+1d/+7d ────
+    this.bot.onText(/^\/check$/, async (msg: any) => {
       const chatId = String(msg.chat.id);
       try {
-        const summary = this.analysisService.calibrationSummary();
-        await this.bot?.sendMessage(
-          chatId,
-          `🎯 <b>Trạng thái hiệu chuẩn</b>\n\n${this.escapeHtml(summary)}\n\n` +
-            `<i>Con số % = xác suất BTC biến động bất thường (|z| ≥ 2) trong 1h.\n` +
-            `Base rate là tần suất nền — mọi dự đoán đều xoay quanh nó.</i>`,
-          { parse_mode: 'HTML' },
-        );
-        this.logger.log(`✅ /calib: responded to ${msg.chat.first_name || chatId}`);
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /calib: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
+        const alerted = this.storageService
+          .getAllPosts()
+          .filter(p => p.detection?.alert === true)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .slice(0, 10);
 
-    // Handle /refit command — chạy vòng lặp đóng ngay: gắn nhãn các dự đoán quá 1h rồi fit lại
-    this.bot.onText(/^\/refit(?:@[\w_]+)?$/i, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        await this.bot?.sendMessage(chatId, '⏳ Đang lấy giá thật từ Binance và fit lại đường hiệu chuẩn...');
-        const r = await this.analysisService.refitCalibration();
-        const fitted = r.perModel.filter((p) => p.fitted);
-        const lines = [
-          `🎯 <b>Refit hoàn tất</b>`,
-          ``,
-          `Nhãn mới gắn: ${r.newlyLabeled}`,
-          `Tổng bài có nhãn: ${r.totalLabeled}`,
-          `Base rate: ${(r.baseRate * 100).toFixed(1)}%`,
-          `P(tăng | có biến động): ${(r.upRateGivenMove * 100).toFixed(1)}%`,
-          ``,
-          fitted.length
-            ? `Model đã fit:\n${fitted.map((p) => `• ${this.escapeHtml(p.model)} — n=${p.n}, Brier=${p.brier.toFixed(3)}`).join('\n')}`
-            : `Chưa model nào đủ mẫu (cần ≥ 30 nhãn/model) để fit đường hiệu chuẩn.`,
-        ];
-        await this.bot?.sendMessage(chatId, lines.join('\n'), { parse_mode: 'HTML' });
-        this.logger.log(`✅ /refit: ${r.newlyLabeled} nhãn mới, ${fitted.length} model fitted`);
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /refit: ${errMsg}`);
-        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
-      }
-    });
-
-    // Handle /skipped command - show posts skipped due to 1-hour expiry
-    this.bot.onText(/^\/skipped(?:@[\w_]+)?$/i, async (msg: any) => {
-      const chatId = String(msg.chat.id);
-      try {
-        const list = this.storageService.getSkippedExpiredPosts();
-        if (list.length === 0) {
-          await this.bot?.sendMessage(chatId, '✅ Chưa có bài nào bị bỏ qua do hết hạn 1 giờ.');
+        if (alerted.length === 0) {
+          await this.bot?.sendMessage(chatId, '📭 Chưa có bài nào kích hoạt detector alert. (Sự kiện lớp A rất hiếm — đó là bình thường.)');
           return;
         }
-        const lines = list
-          .slice()
-          .reverse() // mới nhất trước
-          .slice(0, 20) // tối đa 20 bài
-          .map((r, i) => {
-            const skippedTime = new Date(r.skippedAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-            const preview = this.escapeHtml(r.content.substring(0, 80)).replace(/\n/g, ' ');
-            return `${i + 1}. <a href="${r.url}">${r.postId}</a>\n   ⏱ ${r.ageMinutes} phút trong queue | bỏ qua lúc ${skippedTime}\n   <i>${preview}…</i>`;
-          });
-        const header = `🗑 <b>Bài bị bỏ qua do quá 1 giờ (${list.length} tổng, hiển thị ${Math.min(list.length, 20)} mới nhất):</b>\n\n`;
-        await this.bot?.sendMessage(chatId, header + lines.join('\n\n'), {
+
+        await this.bot?.sendMessage(chatId, this.buildAlertHistoryMessage(alerted), {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
         });
-        this.logger.log(`✅ /skipped: ${list.length} records sent to ${msg.chat.first_name || chatId}`);
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`❌ Lỗi /skipped: ${errMsg}`);
+        this.logger.error(`❌ Lỗi /check: ${errMsg}`);
         await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
       }
     });
 
-    // Handle /models command - show ensemble pool priority order
-    this.bot.onText(/^\/models(?:@[\w_]+)?$/i, async (msg: any) => {
+    // ── /credit — trạng thái API key + hạn mức ngày ────────────────────────
+    this.bot.onText(/^\/credit(?:@[\w_]+)?(?:\s.*)?$/i, async (msg: any) => {
       const chatId = String(msg.chat.id);
-      const list = this.analysisService.getAvailableModels() as Array<{ name: string; vision?: boolean; maxTokens?: number }>;
-      const current = this.analysisService.getCurrentModel();
-      const isSingleModelMode = !current.startsWith('ensemble');
-      const lines = list.map((m, i) => {
-        const isActive = isSingleModelMode && m.name === current;
-        const poolIdx = ENSEMBLE_POOL.indexOf(m.name);
-        const vision = m.vision ? ' 📷' : '';
-        const reasoning = m.maxTokens && m.maxTokens > 500 ? ` 🧠${m.maxTokens}t` : '';
-        const poolMark = poolIdx >= 0 ? ` 🎯pool#${poolIdx + 1}` : '';
-        const mark = isActive ? ' ✅ <b>(đang dùng)</b>' : '';
-        return `${i + 1}. <code>${this.escapeHtml(m.name)}</code>${vision}${reasoning}${poolMark}${mark}`;
-      });
-      await this.bot?.sendMessage(
-        chatId,
-        `🤖 <b>DANH SÁCH MODEL</b>\n\n` +
-        `Chế độ mặc định là <b>ensemble</b>: mỗi bài lấy <b>3 model đầu tiên trong pool</b> ` +
-        `(đánh dấu 🎯pool#N) cho ra kết quả — model lỗi (429/404/timeout) bị bỏ qua, ` +
-        `thử model kế tiếp trong pool, dừng sau tối đa 5 lần thử. ` +
-        `Dùng <code>/model &lt;tên&gt;</code> để ép chạy 1 model đơn lẻ (chỉ để thử nghiệm — ` +
-        `làm mất tính ổn định thang đo giữa các bài), <code>/model ensemble</code> để quay lại mặc định.\n` +
-        `📷 = vision (phân tích ảnh) · 🧠 = reasoning (cần nhiều token) · 🎯pool#N = thứ tự ưu tiên trong ensemble pool\n\n` +
-        lines.join('\n'),
-        { parse_mode: 'HTML' },
-      );
+      try {
+        await this.bot?.sendMessage(chatId, '⏳ Đang kiểm tra OpenRouter...');
+        const info = await this.detectorService.getRemainingCredits();
+        await this.bot?.sendMessage(chatId, `💳 <b>OpenRouter:</b>\n${this.escapeHtml(String(info))}`, { parse_mode: 'HTML' });
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /credit: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi lấy credit: ${errMsg}`);
+      }
     });
 
+    // ── /clear — xoá bài cũ ────────────────────────────────────────────────
+    this.bot.onText(/^\/clear\s+(\d{2})-(\d{2})-(\d{4})$/, async (msg: any, match: any) => {
+      const chatId = String(msg.chat.id);
+      try {
+        const day = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10);
+        const year = parseInt(match[3], 10);
+
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+          await this.bot?.sendMessage(chatId, '❌ Ngày không hợp lệ. Định dạng: /clear dd-mm-yyyy');
+          return;
+        }
+
+        const beforeDate = new Date(year, month - 1, day);
+        const deletedCount = this.storageService.deletePostsBefore(beforeDate);
+        await this.bot?.sendMessage(
+          chatId,
+          `✅ Đã xóa <b>${deletedCount}</b> bài viết trước ngày ${String(day).padStart(2, '0')}-${String(month).padStart(2, '0')}-${year}`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`❌ Lỗi /clear: ${errMsg}`);
+        await this.bot?.sendMessage(chatId, `❌ Lỗi: ${errMsg}`);
+      }
+    });
+
+    // ── /menu ──────────────────────────────────────────────────────────────
+    this.bot.onText(/^\/menu(?:@[\w_]+)?$/i, async (msg: any) => {
+      const chatId = String(msg.chat.id);
+      const message = `📋 <b>DANH SÁCH LỆNH</b>\n\n` +
+        `Bot phát hiện <b>sự kiện lớp A</b> — các bài đăng của Trump gần như chắc chắn gây biến động mạnh giá BTC (lập crypto reserve, thuế toàn cầu, không kích...). ` +
+        `Bài thường → tin im lặng; sự kiện lớp A → 🚨 alert có âm thanh đến mọi người.\n\n` +
+        `🟢 /start — Đăng ký nhận alert\n` +
+        `🛰 /detect &lt;nội dung | postId | URL&gt; — Kiểm tra thủ công một bài\n` +
+        `📊 /check — 10 bài gần nhất đã kích hoạt alert, kèm giá BTC +1h/+1d/+7d\n` +
+        `💰 /btc — Giá BTC hiện tại\n` +
+        `💳 /credit — Trạng thái API key + hạn mức ngày\n` +
+        `🗑️ /clear dd-mm-yyyy — Xóa bài viết trước ngày\n` +
+        `📋 /menu — Danh sách lệnh này`;
+      await this.bot?.sendMessage(chatId, message, { parse_mode: 'HTML' });
+    });
+
+    // ── Polling error handling + watchdog ──────────────────────────────────
     // Without this handler the error event crashes the process.
     (this.bot as any).on('polling_error', (err: Error) => {
       const msg = err.message || String(err);
@@ -1028,7 +269,6 @@ export class TelegramService implements OnModuleInit {
         // Stop retrying — token won't fix itself at runtime
         this.bot?.stopPolling();
       } else {
-        this.lastPollingErrorAt = Date.now();
         this.logger.warn(`Telegram polling error: ${msg.split('\n')[0]}`);
         // Với lỗi mạng (EFATAL, ETIMEDOUT, ECONNRESET...), tự động restart polling sau 5s
         this.schedulePollingRestart();
@@ -1044,7 +284,7 @@ export class TelegramService implements OnModuleInit {
 
   /** Schedule restart polling sau lỗi mạng, tránh restart nhiều lần liên tiếp */
   private schedulePollingRestart() {
-    if (this.pollingRestartTimer) return; // Đã có timer chờ, không thêm nữa
+    if (this.pollingRestartTimer) return;
     this.pollingRestartTimer = setTimeout(async () => {
       this.pollingRestartTimer = null;
       await this.restartPolling('network error recovery');
@@ -1060,9 +300,8 @@ export class TelegramService implements OnModuleInit {
       await this.restartPolling('watchdog: stopped');
       return;
     }
-    // Zombie detection: isPolling()=true nhưng không nhận được updates
-    // Xảy ra sau EFATAL + restart mà mạng chưa phục hồi hoàn toàn
-    // Fix: force restart mỗi 30 phút để đảm bảo polling luôn tươi
+    // Zombie detection: isPolling()=true nhưng không nhận được updates.
+    // Fix: force restart mỗi 30 phút để đảm bảo polling luôn tươi.
     const THIRTY_MIN = 30 * 60 * 1000;
     if (this.pollingStartedAt > 0 && Date.now() - this.pollingStartedAt > THIRTY_MIN) {
       this.logger.log('🔄 Periodic polling restart (30 phút, phòng zombie state)');
@@ -1086,143 +325,13 @@ export class TelegramService implements OnModuleInit {
     }
   }
 
-  /** Load danh sách users từ data/users.json */
-  loadUsers() {
-    try {
-      if (!fs.existsSync(this.usersFile)) {
-        this.logger.warn(`Không tìm thấy file ${this.usersFile}`);
-        return;
-      }
-      const raw = fs.readFileSync(this.usersFile, 'utf-8');
-      const config: UserConfig = JSON.parse(raw);
-      this.users = config.users || [];
-      this.logger.log(`Đã load ${this.users.length} Telegram users`);
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error('Lỗi đọc file users.json: ' + errMsg);
-    }
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Gửi tin
+  // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Cập nhật ngưỡng thông báo của một user.
-   */
-  private setUserThreshold(chatId: string, threshold: number): void {
-    const user = this.users.find(u => u.chatId === chatId);
-    if (!user) throw new Error('User chưa đăng ký. Gửi /start trước.');
-    user.threshold = threshold;
-    const config: UserConfig = { users: this.users };
-    fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
-    this.logger.log(`✅ setUserThreshold: ${chatId} → ${threshold}%`);
-  }
-
-  /**
-   * Thêm user mới vào danh sách nếu chưa tồn tại.
-   * @param chatId Telegram Chat ID (string)
-   * @param name Tên user
-   * @returns true nếu user được thêm mới, false nếu user đã tồn tại
-   */
-  private addUserToList(chatId: string, name: string): boolean {
-    try {
-      // Kiểm tra xem user đã tồn tại chưa
-      const userExists = this.users.some(u => u.chatId === chatId);
-      if (userExists) {
-        this.logger.debug(`User ${chatId} đã tồn tại trong danh sách`);
-        return false;
-      }
-
-      // Thêm user mới
-      this.users.push({ chatId, name });
-
-      // Tạo dataDir nếu chưa tồn tại
-      const dataDir = path.dirname(this.usersFile);
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-      }
-
-      // Ghi lại file
-      const config: UserConfig = { users: this.users };
-      fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
-
-      this.logger.log(`✅ Đã thêm user mới: ${name} (${chatId})`);
-      return true;
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Lỗi thêm user: ${errMsg}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Gửi thông báo alert đến TẤT CẢ users trong danh sách.
-   *
-   * @param post Bài viết gốc của Trump
-   * @param analysis Kết quả phân tích OpenAI
-   * @param btcPrice Giá BTC hiện tại (USD)
-   * @param silent Nếu true: gửi không có âm thanh (xác suất < 10%)
-   */
-  async sendAlert(
-    post: TruthSocialPost,
-    analysis: AnalysisResult,
-    btcPrice: number | null,
-    silent = false,
-  ): Promise<void> {
-    if (!this.bot) {
-      this.logger.warn('Telegram Bot chưa được cấu hình, bỏ qua alert');
-      return;
-    }
-
-    if (this.users.length === 0) {
-      this.logger.warn('Danh sách Telegram users trống, bỏ qua alert');
-      return;
-    }
-
-    // Tải lại danh sách users từ file (cho phép cập nhật hot reload)
-    this.loadUsers();
-
-    const message = this.buildMessage(post, analysis, btcPrice, silent);
-
-    // Lưu bản ghi alert vào file log (để audit sau này)
-    try {
-      this.saveAlertToFile(post, analysis, btcPrice, message);
-      this.logger.debug(`Đã ghi alert vào file ${this.alertsFile}`);
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Không thể ghi alert vào file: ${errMsg}`);
-    }
-
-    // Gửi đến từng user trong danh sách (kiểm tra ngưỡng riêng của từng user)
-    const ensembleProb = analysis.ensembleProbability;
-    for (const user of this.users) {
-      const userThreshold = user.threshold ?? this.globalThreshold;
-      if (ensembleProb < userThreshold) {
-        this.logger.debug(
-          `Bỏ qua ${user.name} (${user.chatId}): ensemble ${ensembleProb}% < ngưỡng ${userThreshold}%`,
-        );
-        continue;
-      }
-      try {
-        await this.bot.sendMessage(user.chatId, message, {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true,
-          disable_notification: silent,
-        });
-        this.logger.log(
-          `Đã gửi alert đến ${user.name} (${user.chatId}) [thr=${userThreshold}%]${silent ? ' [silent]' : ''}`,
-        );
-      } catch (error) {
-        // Không throw - tiếp tục gửi cho các user khác dù 1 user lỗi
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(
-          `Không thể gửi đến ${user.name} (${user.chatId}): ${errMsg}`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Gửi cảnh báo sự kiện lớp A đến TẤT CẢ users — bỏ qua ngưỡng /thr cá nhân,
-   * luôn có âm thanh. Đây là toàn bộ lý do detector tồn tại: sự kiện ~1 lần/quý,
-   * không user nào đăng ký bot này mà lại muốn lọc bỏ nó.
+   * Gửi cảnh báo sự kiện lớp A đến TẤT CẢ users — luôn có âm thanh.
+   * Đây là toàn bộ lý do hệ thống tồn tại: sự kiện ~1 lần/quý.
    */
   async sendDetectorAlert(
     post: TruthSocialPost,
@@ -1261,9 +370,9 @@ export class TelegramService implements OnModuleInit {
 
 💰 Giá BTC lúc phát hiện: <b>${btcPriceText}</b>
 🕐 Đăng lúc: ${postedAt}
-🔗 <a href="${post.url}">Xem bài viết gốc</a>
+🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
 
-<i>Phân tích chi tiết (%) sẽ được gửi sau ít phút.</i>`;
+    this.logAlert(post, detection, btcPrice);
 
     for (const user of this.users) {
       try {
@@ -1281,9 +390,44 @@ export class TelegramService implements OnModuleInit {
   }
 
   /**
-   * Gửi tin nhắn cảnh báo giới hạn API đến tất cả users.
-   * Được gọi khi AnalysisService ném DailyLimitExceededException lần đầu trong ngày.
+   * Tin feed im lặng cho bài không phải sự kiện lớp A — user theo dõi được
+   * dòng bài đăng mà không bị âm thanh làm phiền.
    */
+  async sendFeedMessage(post: TruthSocialPost, btcPrice: number | null): Promise<void> {
+    if (!this.bot) return;
+    this.loadUsers();
+    if (this.users.length === 0) return;
+
+    const preview = post.content
+      ? (post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content)
+      : `[Bài đăng chỉ có ${post.mediaUrls?.length ?? 0} ảnh, không có văn bản]`;
+    const btcPriceText = btcPrice
+      ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+      : 'không lấy được';
+    const postedAt = new Date(post.createdAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+
+    const message = `📋 <b>TRUMP POST</b> <i>(không phải sự kiện lớp A)</i>
+
+<i>${this.escapeHtml(preview)}</i>
+
+💰 BTC: ${btcPriceText} · 🕐 ${postedAt}
+🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
+
+    for (const user of this.users) {
+      try {
+        await this.bot.sendMessage(user.chatId, message, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          disable_notification: true, // im lặng
+        });
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Không thể gửi feed đến ${user.name}: ${errMsg}`);
+      }
+    }
+  }
+
+  /** Cảnh báo đã chạm trần API ngày — gọi đúng một lần mỗi ngày qua consumeLimitAlert(). */
   async sendDailyLimitWarning(): Promise<void> {
     if (!this.bot) return;
     this.loadUsers();
@@ -1291,19 +435,15 @@ export class TelegramService implements OnModuleInit {
       this.logger.warn('[RATE LIMIT] Không có user nào để gửi cảnh báo');
       return;
     }
-    const stats = this.analysisService.getDailyCallStats();
+    const stats = this.detectorService.getDailyCallStats();
     const message =
-      `⚠️ <b>CảNH BÁO: Bot đã đạt giới hạn API hôm nay!</b>\n\n` +
+      `⚠️ <b>CẢNH BÁO: Bot đã đạt giới hạn API hôm nay!</b>\n\n` +
       `📊 API calls hôm nay: <b>${stats.count}/${stats.limit}</b>\n` +
-      `🔒 Phân tích tạm dừng đến <b>0:00 ngày mai</b>\n\n` +
-      `💡 Nếu cần phân tích ngay, dùng /test &lt;nội dung&gt;`;
-    this.logger.error(
-      `[RATE LIMIT] Gửi cảnh báo đến ${this.users.length} users: daily_calls=${stats.count}/${stats.limit}`,
-    );
+      `🔒 Tầng checklist LLM tạm dừng đến <b>0:00 ngày mai</b>\n` +
+      `⚡ Tripwire (bẫy luật) vẫn hoạt động bình thường — sự kiện lớn vẫn được phát hiện.`;
     for (const user of this.users) {
       try {
         await this.bot.sendMessage(user.chatId, message, { parse_mode: 'HTML' });
-        this.logger.log(`[RATE LIMIT] Đã gửi cảnh báo đến ${user.name} (${user.chatId})`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(`[RATE LIMIT] Không gửi được cảnh báo đến ${user.name}: ${errMsg}`);
@@ -1311,157 +451,25 @@ export class TelegramService implements OnModuleInit {
     }
   }
 
-  /**
-   * Ghi một bản ghi alert vào file local để audit.
-   * Mỗi dòng là một JSON object chứa thông tin cần thiết.
-   */
-  private saveAlertToFile(
-    post: TruthSocialPost,
-    analysis: AnalysisResult,
-    btcPrice: number | null,
-    message: string,
-  ) {
-    const dataDir = path.dirname(this.usersFile);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helpers
+  // ─────────────────────────────────────────────────────────────────────────
 
-    const record = {
-      timestamp: new Date().toISOString(),
-      postId: post.id,
-      postUrl: post.url,
-      postCreatedAt: post.createdAt,
-      recipients: this.users.map((u) => u.chatId),
-      analysis: {
-        summary: analysis.summary,
-        btcInfluenceProbability: analysis.btcInfluenceProbability,
-        btcDirection: analysis.btcDirection,
-        reasoning: analysis.reasoning,
-      },
-      btcPriceAtSend: btcPrice ?? null,
-      messagePreview: message.substring(0, 200),
-    };
-
-    fs.appendFileSync(this.alertsFile, JSON.stringify(record) + '\n', 'utf-8');
-  }
-
-  /**
-   * Xây dựng nội dung tin nhắn Telegram (HTML format).
-   */
-  private buildMessage(
-    post: TruthSocialPost,
-    analysis: AnalysisResult,
-    btcPrice: number | null,
-    silent = false,
-  ): string {
-    const header = silent
-      ? '📋 <b>TRUMP POST</b> <i>(xác suất thấp)</i>'
-      : '🚨 <b>TRUMP POST - BTC ALERT!</b>';
-    // Build direction indicator with arrow
-    let directionDisplay = '';
-    if (analysis.btcDirection === 'increase') {
-      directionDisplay = '↑ TĂNG';
-    } else if (analysis.btcDirection === 'decrease') {
-      directionDisplay = '↓ GIẢM';
-    } else {
-      directionDisplay = '─ TRUNG LẬP';
-    }
-
-    const ensembleProb = analysis.ensembleProbability ?? analysis.btcInfluenceProbability;
-    const probabilityBar = this.buildProbabilityBar(ensembleProb, analysis.btcDirection);
-
-    const btcPriceText = btcPrice
-      ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-      : 'Không lấy được';
-
-    const postedAt = new Date(post.createdAt).toLocaleString('vi-VN', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-    });
-
-    // Rút ngắn nội dung nếu quá dài (Telegram giới hạn 4096 ký tự)
-    let preview: string;
-    if (post.content) {
-      preview = post.content.length > 300 ? post.content.substring(0, 297) + '...' : post.content;
-    } else if (post.mediaUrls?.length) {
-      preview = `[Bài đăng chỉ có ${post.mediaUrls.length} ảnh, không có văn bản]`;
-    } else {
-      preview = '[Không có nội dung]';
-    }
-
-    return `${header}
-
-📢 <b>Bài viết gốc:</b>
-<i>${preview}</i>
-
-📝 <b>Tóm tắt:</b>
-${analysis.summary}
-
-💡 <b>Lý do:</b> ${analysis.reasoning}
-
-📊 <b>Xác suất BTC biến động bất thường trong 1h:</b>
-${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
-${this.buildBreakdown(analysis)}
-
-💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}
-
-🕐 <b>Đăng lúc:</b> ${postedAt}
-🔗 <a href="${post.url}">Xem bài viết gốc</a>`;
-  }
-
-  /**
-   * Dòng chi tiết dưới thanh xác suất.
-   *
-   * Hiển thị base rate ngay cạnh con số dự đoán: không có mốc so sánh đó, 8% trông
-   * như "gần như chắc chắn không có gì", trong khi nếu base rate là 5% thì 8% là
-   * một tín hiệu thật. Cũng nói rõ con số đã được hiệu chuẩn trên nhãn thật hay
-   * mới chỉ là prior + bằng chứng.
-   */
-  private buildBreakdown(analysis: AnalysisResult): string {
-    const modelLabel = analysis.modelUsed ? this.escapeHtml(analysis.modelUsed) : 'unknown';
-    const s = analysis.scoring;
-
-    if (!s) {
-      return `<i>🤖 <code>${modelLabel}</code> — bài bị gate loại, không gọi model</i>`;
-    }
-
-    const pct = (v: number) => `${Math.round(v * 100)}%`;
-    const source = s.calibrated ? 'đã hiệu chuẩn trên dữ liệu thật' : 'prior + bằng chứng (chưa đủ nhãn)';
-    const band = `${pct(s.pMoveLow)}–${pct(s.pMoveHigh)}`;
-    const nModels = Object.keys(s.pMoveByModel).length;
-
-    const rulesLine = analysis.matchedRules?.length
-      ? `\n🔍 Luật khớp: <i>${this.escapeHtml(analysis.matchedRules.join(', '))}</i>`
-      : '';
-
-    return (
-      `<i>🤖 <code>${modelLabel}</code> · ${nModels} model · ${s.promptVersion}\n` +
-      `📉 Tần suất nền: ${pct(s.baseRate)} — ${source}\n` +
-      `📐 Khoảng giữa các model: ${band} · đồng thuận ${pct(s.agreement)}\n` +
-      `🧭 P(tăng | có biến động): ${pct(s.pUp)}</i>${rulesLine}`
-    );
-  }
-
-  /**
-   * Xây dựng tin nhắn bảng tổng hợp cho /check command.
-   * Hiển thị các bài >= threshold kèm link và 4 cột giá BTC.
-   */
-  private buildCheckMessage(posts: PostRecord[], threshold: number = 15): string {
+  /** Bảng lịch sử các bài detector đã alert, kèm giá BTC các mốc sau đó. */
+  private buildAlertHistoryMessage(posts: PostRecord[]): string {
     const fmtPrice = (p: number | null | undefined): string => {
       if (p == null) return '⏳';
       return `$${p.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
     };
-
     const fmtChange = (base: number | undefined, later: number | null | undefined): string => {
       if (base == null || later == null) return '';
       const pct = ((later - base) / base) * 100;
-      const sign = pct >= 0 ? '+' : '';
-      return ` (${sign}${pct.toFixed(1)}%)`;
+      return ` (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)`;
     };
 
-    const lines: string[] = [`📊 <b>BÀI CÓ XÁC SUẤT ẢNH HƯỞNG BTC &gt;=${threshold}% (${posts.length} bài)</b>\n`];
-
+    const lines: string[] = [`🚨 <b>LỊCH SỬ DETECTOR ALERT (${posts.length} bài gần nhất)</b>\n`];
     posts.forEach((p, i) => {
-      const dir = p.btcDirection === 'increase' ? '↑' : p.btcDirection === 'decrease' ? '↓' : '─';
+      const d = p.detection!;
       const date = new Date(p.createdAt).toLocaleString('vi-VN', {
         timeZone: 'Asia/Ho_Chi_Minh',
         day: '2-digit', month: '2-digit',
@@ -1470,85 +478,77 @@ ${this.buildBreakdown(analysis)}
       const base = p.btcPriceAtPost;
       const link = p.url ? `<a href="${p.url}">🔗 Link</a>` : '';
       lines.push(
-        `<b>${i + 1}. [${date}]</b> <b>${p.btcInfluenceProbability}% ${dir}</b> ${link}\n` +
-        `   📌 ${(p.summary ?? p.content).substring(0, 80)}...\n` +
+        `<b>${i + 1}. [${date}] LỚP ${d.eventClass}</b> — ${this.escapeHtml(d.eventClassName ?? '')} ${link}\n` +
+        `   📌 ${this.escapeHtml(p.content.substring(0, 80))}...\n` +
         `   💰 Lúc đăng: <code>${fmtPrice(base)}</code>\n` +
         `   ⏱ +1h:  <code>${fmtPrice(p.btcPriceAt1h)}${fmtChange(base, p.btcPriceAt1h)}</code>\n` +
         `   📅 +1d:  <code>${fmtPrice(p.btcPriceAt1d)}${fmtChange(base, p.btcPriceAt1d)}</code>\n` +
-        `   📆 +7d:  <code>${fmtPrice(p.btcPriceAt7d)}${fmtChange(base, p.btcPriceAt7d)}</code>`
+        `   📆 +7d:  <code>${fmtPrice(p.btcPriceAt7d)}${fmtChange(base, p.btcPriceAt7d)}</code>`,
       );
     });
-
     return lines.join('\n\n');
   }
 
-  /** Tạo thanh tiến độ dạng text để hiển thị %, với màu sắc dựa vào hướng ảnh hưởng */
-  private buildProbabilityBar(probability: number, direction: 'increase' | 'decrease' | 'neutral'): string {
-    const filled = Math.round(probability / 10);
-    const empty = 10 - filled;
-
-    let filledEmoji = '🟩'; // Green for increase (default)
-    let emptyEmoji = '⬜'; // White for empty
-
-    if (direction === 'decrease') {
-      filledEmoji = '🟥'; // Red for decrease
-    } else if (direction === 'neutral') {
-      filledEmoji = '⬜'; // Gray for neutral
+  /** Ghi một bản ghi alert vào data/alerts.log để audit. */
+  private logAlert(post: TruthSocialPost, detection: DetectionResult, btcPrice: number | null) {
+    try {
+      const dataDir = path.dirname(this.alertsFile);
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      const record = {
+        timestamp: new Date().toISOString(),
+        postId: post.id,
+        postUrl: post.url,
+        postCreatedAt: post.createdAt,
+        recipients: this.users.map(u => u.chatId),
+        detection: {
+          eventClass: detection.eventClass,
+          source: detection.source,
+          matchedRules: detection.matchedRules,
+          novelty: detection.novelty,
+        },
+        btcPriceAtSend: btcPrice ?? null,
+      };
+      fs.appendFileSync(this.alertsFile, JSON.stringify(record) + '\n', 'utf-8');
+    } catch (err) {
+      this.logger.error(`Không thể ghi alerts.log: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
 
-    return filledEmoji.repeat(filled) + emptyEmoji.repeat(empty);
+  /** Load danh sách users từ data/users.json */
+  loadUsers() {
+    try {
+      if (!fs.existsSync(this.usersFile)) {
+        this.logger.warn(`Không tìm thấy file ${this.usersFile}`);
+        return;
+      }
+      const raw = fs.readFileSync(this.usersFile, 'utf-8');
+      const config: UserConfig = JSON.parse(raw);
+      this.users = config.users || [];
+      this.logger.log(`Đã load ${this.users.length} Telegram users`);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error('Lỗi đọc file users.json: ' + errMsg);
+    }
   }
 
   /**
-   * Xây dựng tin nhắn phản hồi cho /test command.
-   * Format tương tự buildMessage nhưng không có URL bài viết gốc.
+   * Thêm user mới vào danh sách nếu chưa tồn tại.
+   * @returns true nếu user được thêm mới, false nếu đã tồn tại
    */
-  private buildTestMessage(
-    content: string,
-    analysis: AnalysisResult,
-    btcPrice: number | null,
-  ): string {
-    const ensembleProb = analysis.ensembleProbability ?? analysis.btcInfluenceProbability;
-    const probabilityBar = this.buildProbabilityBar(ensembleProb, analysis.btcDirection);
+  private addUserToList(chatId: string, name: string): boolean {
+    const userExists = this.users.some(u => u.chatId === chatId);
+    if (userExists) return false;
 
-    const btcPriceText = btcPrice
-      ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-      : 'Không lấy được';
-
-    // Rút ngắn nội dung nếu quá dài (Telegram giới hạn 4096 ký tự)
-    const preview =
-      content.length > 300 ? content.substring(0, 297) + '...' : content;
-
-    // Build direction indicator with arrow
-    let directionDisplay = '';
-    if (analysis.btcDirection === 'increase') {
-      directionDisplay = '↑ TĂNG';
-    } else if (analysis.btcDirection === 'decrease') {
-      directionDisplay = '↓ GIẢM';
-    } else {
-      directionDisplay = '─ TRUNG LẬP';
-    }
-
-    return `📋 <b>TEST PHÂN TÍCH</b>
-
-📝 <b>Nội dung:</b>
-<i>${preview}</i>
-
-📝 <b>Tóm tắt:</b>
-${analysis.summary}
-
-💡 <b>Lý do:</b> ${analysis.reasoning}
-
-📊 <b>Xác suất BTC biến động bất thường trong 1h:</b>
-${probabilityBar} <b>${ensembleProb}% ${directionDisplay}</b>
-${this.buildBreakdown(analysis)}
-
-💰 <b>Giá BTC hiện tại:</b> ${btcPriceText}`;
+    this.users.push({ chatId, name });
+    const dataDir = path.dirname(this.usersFile);
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    const config: UserConfig = { users: this.users };
+    fs.writeFileSync(this.usersFile, JSON.stringify(config, null, 2), 'utf-8');
+    this.logger.log(`✅ Đã thêm user mới: ${name} (${chatId})`);
+    return true;
   }
 
-  /**
-   * Escape HTML entities để tránh lỗi khi hiển thị trong HTML parse mode
-   */
+  /** Escape HTML entities để tránh lỗi khi hiển thị trong HTML parse mode */
   private escapeHtml(text: string): string {
     const map: { [key: string]: string } = {
       '&': '&amp;',
@@ -1558,36 +558,5 @@ ${this.buildBreakdown(analysis)}
       "'": '&#039;',
     };
     return text.replace(/[&<>"']/g, (char) => map[char]);
-  }
-
-  /**
-   * Gửi prompt thành nhiều phần vì giới hạn độ dài Telegram (4096 ký tự)
-   */
-  private async sendPromptInParts(chatId: string, prompt: string, headerText: string): Promise<void> {
-    const maxLength = 4000;
-    const parts: string[] = [];
-
-    let currentPart = '';
-    const lines = prompt.split('\n');
-    for (const line of lines) {
-      if (currentPart.length + line.length + 1 > maxLength) {
-        if (currentPart) parts.push(currentPart);
-        currentPart = line + '\n';
-      } else {
-        currentPart += line + '\n';
-      }
-    }
-    if (currentPart) parts.push(currentPart);
-
-    // Gửi từng phần
-    for (let i = 0; i < parts.length; i++) {
-      const header = i === 0 ? headerText : '';
-      const footer = i === parts.length - 1 ? '\n\n✅ Hết prompt' : '';
-      await this.bot?.sendMessage(
-        chatId,
-        `${header}<code>${this.escapeHtml(parts[i])}</code>${footer}`,
-        { parse_mode: 'HTML' }
-      );
-    }
   }
 }

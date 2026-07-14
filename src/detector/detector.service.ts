@@ -1,25 +1,30 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ENSEMBLE_POOL } from '../analysis/ensemble.service';
-import { gate } from '../analysis/gate';
-import { extractJson, OpenRouterClient } from '../analysis/openrouter.client';
+import axios from 'axios';
 import { DetectionResult } from '../common/interfaces';
+import { gate } from './gate';
+import { extractJson, OpenRouterClient } from './openrouter.client';
 import { assessNovelty, jaccard, REPEAT_THRESHOLD, tokenize, topSimilar } from './novelty';
 import { EVENT_CLASSES, EventClass, runTripwires } from './taxonomy';
 
 /**
- * Máy phát hiện sự kiện lớp A — kênh cảnh báo rời rạc, recall-first, chạy TRƯỚC
- * pipeline chấm điểm vì với sự kiện thật, từng phút đều có giá.
+ * Máy phát hiện sự kiện lớp A — trái tim duy nhất của hệ thống.
  *
- * Luồng: gate → novelty → tripwire (0ms, 0 call) → nếu chưa nổ: LLM checklist
- * (5 model song song, 1 call/model, cần ≥2 phiếu đồng thuận) → dedup → ALERT.
+ * Nhiệm vụ: phát hiện ~0.1% bài đăng gần như chắc chắn gây biến động mạnh giá
+ * BTC (lập crypto reserve, thuế toàn cầu, không kích...). Đây là bài PHÂN LOẠI
+ * vào danh sách đóng — không phải ước lượng xác suất.
  *
- * Khác pipeline chấm điểm ở ba điểm cốt lõi:
- * 1. Hỏi model PHÂN LOẠI vào danh sách đóng (việc model yếu vẫn làm ổn),
- *    không hỏi xác suất (việc model yếu làm rất tồi — đo được AUC 0.53).
- * 2. Đầu ra là ALERT nhị phân, không phải con số % giả vờ đã hiệu chuẩn.
- * 3. Nghiêng hẳn về recall: sự kiện thật ~1 lần/quý, vài báo giả/tháng là rẻ;
- *    miss một sự kiện thật là mất toàn bộ lý do tồn tại của hệ thống.
+ * Vì sao không có kênh chấm điểm %: đã thử (v2) và đo được rằng free model
+ * gần như không xếp hạng được các bài vùng giữa (AUC 0.529 ≈ ngẫu nhiên trên
+ * 502 bài), và tầng hiệu chuẩn chỉ sửa được thang đo chứ không tạo ra tín hiệu.
+ * Với mục đích thật của hệ thống — bắt các sự kiện lớn hiếm — phân loại thuần
+ * chính xác hơn, nhanh hơn và rẻ hơn. Xem SCORING.md.
+ *
+ * Luồng: gate → novelty → tripwire (0ms, 0 call) → nếu tripwire im lặng:
+ * LLM checklist (5 model song song, đồng thuận ≥2) → dedup → ALERT.
+ *
+ * Triết lý: recall tuyệt đối. Sự kiện thật ~1 lần/quý; vài báo giả/tháng là
+ * rẻ; miss một sự kiện thật là mất toàn bộ lý do tồn tại của hệ thống.
  */
 
 interface ChecklistVote {
@@ -30,8 +35,17 @@ interface ChecklistVote {
   reasoning: string;
 }
 
-/** Số model gọi song song cho checklist. */
-const CHECKLIST_MODELS = 5;
+/**
+ * Model free của OpenRouter dùng cho checklist, theo thứ tự ưu tiên.
+ * Gọi song song tất cả — model chết bị loại êm, cần ≥2 phiếu hợp lệ đồng thuận.
+ */
+const CHECKLIST_MODELS = [
+  'nvidia/nemotron-nano-12b-v2-vl:free',
+  'openai/gpt-oss-20b:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3-nano-30b-a3b:free',
+  'openai/gpt-oss-120b:free',
+];
 
 /** Số phiếu tối thiểu đồng thuận (cùng lớp + confirmed + newAction) để alert. */
 const MIN_CONSENSUS = 2;
@@ -48,7 +62,7 @@ const DEDUP_WINDOW_MS = 24 * 3_600_000;
 const DEDUP_SIMILARITY = 0.35;
 
 export interface DetectOptions {
-  /** true = bỏ kiểm tra dedup (dùng cho eval, nơi các case cùng lớp chạy liên tiếp) */
+  /** true = bỏ kiểm tra dedup (dùng cho eval và lệnh /detect thủ công) */
   skipDedup?: boolean;
   /** true = chỉ chạy tripwire + novelty, không gọi LLM (eval nhanh, 0 call) */
   rulesOnly?: boolean;
@@ -58,6 +72,14 @@ export interface DetectOptions {
 export class DetectorService {
   private readonly logger = new Logger(DetectorService.name);
   private readonly client: OpenRouterClient;
+  private readonly apiKey: string;
+
+  /** Giới hạn API call/ngày (phòng ngừa), reset lúc 0:00 giờ server. */
+  private readonly DAILY_LIMIT = 500;
+  private dailyCallCount = 0;
+  private dailyCallDate = '';
+  /** true = đã vượt hạn mức và chưa ai lấy cờ cảnh báo (gửi Telegram 1 lần/ngày) */
+  private pendingLimitAlert = false;
 
   /**
    * Alert gần nhất theo lớp — chống bắn lặp khi Trump đăng follow-up trong ngày.
@@ -67,15 +89,81 @@ export class DetectorService {
   private lastAlerts = new Map<EventClass, { tokens: Set<string>; at: number }>();
 
   constructor(configService: ConfigService) {
-    this.client = new OpenRouterClient(configService.get<string>('OPENROUTER_API_KEY') || '');
+    this.apiKey = configService.get<string>('OPENROUTER_API_KEY') || '';
+    if (!this.apiKey) this.logger.warn('OPENROUTER_API_KEY chưa được cấu hình trong .env!');
+    this.client = new OpenRouterClient(this.apiKey);
+    this.logger.log(
+      `[CONFIG] Detector | checklist pool: ${CHECKLIST_MODELS.length} model | ` +
+        `đồng thuận ≥${MIN_CONSENSUS} | daily limit ${this.DAILY_LIMIT} calls/day`,
+    );
   }
 
-  async detect(
-    content: string,
-    recentPosts: string[],
-    countCall: () => void,
-    opts: DetectOptions = {},
-  ): Promise<DetectionResult> {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Rate limit (bộ đếm duy nhất của toàn hệ thống — detector là nơi duy nhất gọi LLM)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Tăng bộ đếm ngày; throws khi vượt hạn mức. Tự reset khi sang ngày mới. */
+  private checkDailyLimit(): void {
+    const today = new Date().toLocaleDateString('sv-SE');
+    if (this.dailyCallDate !== today) {
+      if (this.dailyCallCount > 0) {
+        this.logger.log(`[DAILY RESET] Sang ngày ${today}. Calls ngày qua: ${this.dailyCallCount}/${this.DAILY_LIMIT}`);
+      }
+      this.dailyCallDate = today;
+      this.dailyCallCount = 0;
+    }
+
+    this.dailyCallCount++;
+    if (this.dailyCallCount > this.DAILY_LIMIT) {
+      // Chỉ giương cờ cảnh báo đúng một lần cho lần vượt đầu tiên trong ngày
+      if (this.dailyCallCount === this.DAILY_LIMIT + 1) this.pendingLimitAlert = true;
+      throw new Error(`Đã đạt giới hạn ${this.DAILY_LIMIT} API calls/ngày (call #${this.dailyCallCount}).`);
+    }
+  }
+
+  getDailyCallStats(): { count: number; limit: number; date: string } {
+    return { count: this.dailyCallCount, limit: this.DAILY_LIMIT, date: this.dailyCallDate };
+  }
+
+  /**
+   * Trả về true ĐÚNG MỘT LẦN khi hạn mức ngày vừa bị vượt — bên gọi dùng để
+   * gửi cảnh báo Telegram một lần/ngày rồi thôi.
+   */
+  consumeLimitAlert(): boolean {
+    if (!this.pendingLimitAlert) return false;
+    this.pendingLimitAlert = false;
+    return true;
+  }
+
+  /** Kiểm tra API key OpenRouter + thống kê call — cho lệnh /credit. */
+  async getRemainingCredits(): Promise<string> {
+    const stats = this.getDailyCallStats();
+    const statsStr = `Daily calls hôm nay (${stats.date || 'chưa có call nào'}): ${stats.count}/${stats.limit}`;
+    if (!this.apiKey) return `OPENROUTER_API_KEY chưa được cấu hình. Thêm vào .env và restart app.`;
+
+    try {
+      const resp = await axios.get('https://openrouter.ai/api/v1/auth/key', {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        timeout: 7000,
+      });
+      const d = resp.data?.data;
+      if (d) {
+        const credits = d.usage != null ? ` | Credit đã dùng: $${Number(d.usage).toFixed(4)}` : '';
+        return `OpenRouter key hợp lệ ✅ | ${statsStr}${credits}`;
+      }
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401) return `OpenRouter API key không hợp lệ (HTTP 401) | ${statsStr}`;
+      return `Lỗi kiểm tra OpenRouter key: ${err instanceof Error ? err.message : String(err)} | ${statsStr}`;
+    }
+    return `OpenRouter key OK | ${statsStr}`;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Phát hiện
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async detect(content: string, recentPosts: string[], opts: DetectOptions = {}): Promise<DetectionResult> {
     const base: DetectionResult = {
       alert: false,
       eventClass: null,
@@ -124,7 +212,7 @@ export class DetectorService {
     // ── Tầng 2: LLM checklist — chỉ khi tripwire im lặng ──────────────────
     if (opts.rulesOnly) return base;
 
-    const votes = await this.runChecklist(content, recentPosts, countCall);
+    const votes = await this.runChecklist(content, recentPosts);
     base.votes = votes.map(v => ({
       model: v.model,
       eventClass: v.eventClass,
@@ -184,21 +272,16 @@ export class DetectorService {
 
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Gọi checklist trên CHECKLIST_MODELS model đầu pool, song song, 1 call/model. */
-  private async runChecklist(
-    content: string,
-    recentPosts: string[],
-    countCall: () => void,
-  ): Promise<ChecklistVote[]> {
+  /** Gọi checklist trên toàn bộ pool, song song, 1 call/model. */
+  private async runChecklist(content: string, recentPosts: string[]): Promise<ChecklistVote[]> {
     const prompt = this.buildChecklistPrompt(content, recentPosts);
-    const models = ENSEMBLE_POOL.slice(0, CHECKLIST_MODELS);
 
     const results = await Promise.all(
-      models.map(async model => {
+      CHECKLIST_MODELS.map(async model => {
         try {
-          countCall();
+          this.checkDailyLimit();
         } catch (err) {
-          // Hết hạn mức ngày — detector không được phép làm sập luồng chính
+          // Hết hạn mức ngày — detector không được phép sập; bỏ qua model này
           this.logger.warn(`[DETECTOR] Bỏ qua ${model}: ${err instanceof Error ? err.message : String(err)}`);
           return null;
         }

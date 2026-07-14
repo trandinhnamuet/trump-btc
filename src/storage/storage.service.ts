@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PostRecord, SkippedAnalysisRecord, StorageData } from '../common/interfaces';
+import { PostRecord, StorageData } from '../common/interfaces';
 
 /**
  * StorageService: Quản lý lưu trữ dữ liệu vào file JSON local.
@@ -18,15 +18,10 @@ export class StorageService implements OnModuleInit {
   // Cache dữ liệu trong memory để tăng performance
   private data: StorageData = { lastPostId: null, posts: [] };
 
-  // Danh sách bài bị bỏ qua vì quá 1h trong hàng chờ (in-memory, persist vào file)
-  private skippedExpiredPosts: SkippedAnalysisRecord[] = [];
-  private readonly skippedFile = path.join(process.cwd(), 'data', 'skipped-analysis.json');
-
   /** Khởi tạo: tạo thư mục và load dữ liệu khi module khởi động */
   onModuleInit() {
     this.ensureDataDir();
     this.loadData();
-    this.loadSkippedData();
   }
 
   /** Đảm bảo thư mục data/ tồn tại */
@@ -127,11 +122,6 @@ export class StorageService implements OnModuleInit {
     return this.data.posts.find((p) => p.id === id);
   }
 
-  /** Lấy các bài viết chưa được phân tích (btcInfluenceProbability == null) */
-  getUnanalyzedPosts(): PostRecord[] {
-    return this.data.posts.filter((p) => p.btcInfluenceProbability == null);
-  }
-
   /** Lấy tất cả bài viết đã lưu */
   getAllPosts(): PostRecord[] {
     return this.data.posts;
@@ -159,38 +149,4 @@ export class StorageService implements OnModuleInit {
     return deletedCount;
   }
 
-  /** Ghi nhận một bài viết bị bỏ qua vì đã quá 1h trong hàng chờ */
-  addSkippedExpiredPost(record: SkippedAnalysisRecord): void {
-    this.skippedExpiredPosts.push(record);
-    this.persistSkippedData();
-    this.logger.warn(
-      `[SKIP-EXPIRY] Bài ${record.postId} bị bỏ qua (${record.ageMinutes} phút trong queue)`,
-    );
-  }
-
-  /** Trả về toàn bộ danh sách bài bị bỏ qua vì hết hạn */
-  getSkippedExpiredPosts(): SkippedAnalysisRecord[] {
-    return this.skippedExpiredPosts;
-  }
-
-  /** Load danh sách skipped từ file */
-  private loadSkippedData(): void {
-    if (!fs.existsSync(this.skippedFile)) return;
-    try {
-      const raw = fs.readFileSync(this.skippedFile, 'utf-8');
-      this.skippedExpiredPosts = JSON.parse(raw) as SkippedAnalysisRecord[];
-      this.logger.log(`Đã tải ${this.skippedExpiredPosts.length} bài bị skip khỏi ${this.skippedFile}`);
-    } catch (err) {
-      this.logger.error(`Lỗi đọc skipped-analysis.json: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  /** Lưu danh sách skipped xuống file */
-  private persistSkippedData(): void {
-    try {
-      fs.writeFileSync(this.skippedFile, JSON.stringify(this.skippedExpiredPosts, null, 2), 'utf-8');
-    } catch (err) {
-      this.logger.error(`Lỗi ghi skipped-analysis.json: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
 }
