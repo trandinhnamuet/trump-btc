@@ -13,15 +13,18 @@ import * as path from 'path';
  * Đo thực tế 2026-07-14: pool hardcode cũ chết 4/5 model — gpt-oss-120b không
  * còn free, nemotron-vl timeout 122 giây, llama/qwen 429.
  *
- * Cơ chế: mỗi 6 giờ (và khi khởi động nếu dữ liệu cũ >12h):
+ * Cơ chế: mỗi 6 giờ (và khi khởi động nếu dữ liệu cũ >12h hoặc không đủ ngưỡng):
  *   1. GET /api/v1/models → lọc model free thuần text-output, context ≥16k,
  *      loại meta-router / moderation / audio (EXCLUDE)
- *   2. PROBE từng ứng viên bằng một call thật (~30 token) — "có trong danh
- *      sách" ≠ "gọi được"; chỉ model trả lời được mới vào sổ
+ *   2. PROBE từng ứng viên theo LÔ NHỎ, có nghỉ giữa các lô, có retry-1-lần
+ *      khi gặp 429 (OpenRouter giới hạn request/phút CHUNG CHO CẢ TÀI KHOẢN
+ *      trên model free — bắn cả danh sách đồng thời gây bùng nổ 429 giả, đo
+ *      thực tế: 18/19 model "chết" oan trong một đợt probe không giãn cách)
  *   3. Sắp theo độ trễ, persist xuống data/free-models.json (sống sót qua restart)
  *
  * Checklist lấy top-5 theo độ trễ với trần 3 model/nhà cung cấp (đa dạng phiếu
- * bầu). Khi sổ trống (lần chạy đầu, mạng lỗi) → lui về SEED đã xác minh tay.
+ * bầu). Khi sổ trống HOẶC dưới MIN_VIABLE_MODELS → lui về SEED đã xác minh tay
+ * — không bao giờ để checklist chạy với số model ít hơn ngưỡng đồng thuận.
  */
 
 export interface RegisteredModel {
@@ -76,9 +79,11 @@ const STALE_MS = 12 * 3_600_000;
 const MIN_VIABLE_MODELS = 3;
 
 /** Số probe chạy đồng thời mỗi lô — giảm bùng nổ 429 khi probe cả danh sách. */
-const PROBE_BATCH_SIZE = 4;
+const PROBE_BATCH_SIZE = 3;
 /** Nghỉ giữa các lô probe. */
-const PROBE_BATCH_DELAY_MS = 1500;
+const PROBE_BATCH_DELAY_MS = 4000;
+/** Backoff khi một probe gặp 429 — thử lại đúng 1 lần. */
+const PROBE_RETRY_DELAY_MS = 5000;
 
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
@@ -221,8 +226,17 @@ export class ModelRegistryService implements OnModuleInit {
       .map((m: any) => String(m.id));
   }
 
-  /** Một call thật để xác nhận model đang phục vụ. Trả null nếu chết. */
-  private async probe(model: string): Promise<RegisteredModel | null> {
+  /**
+   * Một call thật để xác nhận model đang phục vụ. Trả null nếu chết.
+   *
+   * 429 được thử lại đúng 1 lần sau backoff — trên OpenRouter, 429 của model
+   * free thường là giới hạn request/phút CHUNG CHO CẢ TÀI KHOẢN (không phải
+   * riêng model đó), nên "429 ở lần đầu" không có nghĩa model đã chết, chỉ có
+   * nghĩa cần đợi. Đo thực tế trên server: đánh chết ngay ở 429 khiến 18/19
+   * model bị loại oan trong một đợt probe. Các lỗi khác (404, timeout, JSON
+   * rỗng) vẫn coi là chết ngay — retry không giúp được gì ở đó.
+   */
+  private async probe(model: string, isRetry = false): Promise<RegisteredModel | null> {
     const today = new Date().toLocaleDateString('sv-SE');
     if (this.probeDate !== today) {
       this.probeDate = today;
@@ -254,7 +268,11 @@ export class ModelRegistryService implements OnModuleInit {
       const raw = (msg?.content || msg?.reasoning || '').trim();
       if (!raw) return null;
       return { id: model, latencyMs: Date.now() - start, probedAt: new Date().toISOString() };
-    } catch {
+    } catch (err: any) {
+      if (err?.response?.status === 429 && !isRetry) {
+        await new Promise(resolve => setTimeout(resolve, PROBE_RETRY_DELAY_MS));
+        return this.probe(model, true);
+      }
       return null;
     }
   }
